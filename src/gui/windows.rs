@@ -16,6 +16,7 @@ type HCURSOR = *mut std::ffi::c_void;
 type HBRUSH = *mut std::ffi::c_void;
 type HMENU = *mut std::ffi::c_void;
 type HFONT = *mut std::ffi::c_void;
+type HDC = *mut std::ffi::c_void;
 type LPARAM = isize;
 type WPARAM = usize;
 type LRESULT = isize;
@@ -27,8 +28,11 @@ const WS_MINIMIZEBOX: u32 = 0x00020000;
 const WS_VISIBLE: u32 = 0x10000000;
 const WS_CHILD: u32 = 0x40000000;
 const WS_BORDER: u32 = 0x00800000;
-const BS_PUSHBUTTON: u32 = 0x00000000;
 const BS_DEFPUSHBUTTON: u32 = 0x00000001;
+const BS_AUTOCHECKBOX: u32 = 0x00000003;
+const BS_GROUPBOX: u32 = 0x00000007;
+const ES_NUMBER: u32 = 0x2000;
+const ES_AUTOHSCROLL: u32 = 0x0080;
 const SW_SHOW: i32 = 5;
 const SW_HIDE: i32 = 0;
 
@@ -37,6 +41,9 @@ const WM_DESTROY: u32 = 0x0002;
 const WM_COMMAND: u32 = 0x0111;
 const WM_TIMER: u32 = 0x0113;
 const WM_SETFONT: u32 = 0x0030;
+const WM_CTLCOLORDLG: u32 = 0x0136;
+const WM_CTLCOLORSTATIC: u32 = 0x0138;
+const WM_CTLCOLORBTN: u32 = 0x0135;
 const WM_USER: u32 = 0x0400;
 const WM_TRAYICON: u32 = WM_USER + 1;
 const WM_LBUTTONDBLCLK: u32 = 0x0203;
@@ -52,6 +59,7 @@ const TPM_RIGHTBUTTON: u32 = 0x0002;
 const COLOR_BTNFACE: u32 = 15;
 const IDC_ARROW: *const u16 = 32512 as *const u16;
 const DEFAULT_GUI_FONT: i32 = 17;
+const TRANSPARENT: i32 = 1;
 
 const NIM_ADD: u32 = 0x00000000;
 const NIM_DELETE: u32 = 0x00000002;
@@ -65,13 +73,18 @@ const HWND_NOTOPMOST: HWND = -2isize as HWND;
 const SWP_NOMOVE: u32 = 0x0002;
 const SWP_NOSIZE: u32 = 0x0001;
 
-// ListView messages
+// ListView
 const LVM_FIRST: u32 = 0x1000;
+const LVM_SETBKCOLOR: u32 = LVM_FIRST + 1;
 const LVM_INSERTCOLUMNW: u32 = LVM_FIRST + 97;
 const LVM_SETCOLUMNWIDTH: u32 = LVM_FIRST + 30;
 const LVM_INSERTITEMW: u32 = LVM_FIRST + 77;
 const LVM_SETITEMTEXTW: u32 = LVM_FIRST + 116;
 const LVM_SETEXTENDEDLISTVIEWSTYLE: u32 = LVM_FIRST + 54;
+const LVM_SETTEXTCOLOR: u32 = LVM_FIRST + 36;
+const LVM_SETTEXTBKCOLOR: u32 = LVM_FIRST + 38;
+const CLR_NONE: u32 = 0xFFFFFFFF;
+
 const LVS_EX_FULLROWSELECT: u32 = 0x00000020;
 const LVS_EX_DOUBLEBUFFER: u32 = 0x00010000;
 const LVS_REPORT: u32 = 0x0001;
@@ -79,12 +92,11 @@ const LVS_NOCOLUMNHEADER: u32 = 0x4000;
 const LVS_SINGLESEL: u32 = 0x0004;
 const LVCF_FMT: u32 = 0x0001;
 const LVCF_WIDTH: u32 = 0x0002;
-const LVCF_TEXT: u32 = 0x0004;
 const LVIF_TEXT: u32 = 0x0001;
 const LVCFMT_LEFT: i32 = 0x0000;
 const LVCFMT_RIGHT: i32 = 0x0001;
 
-// Menu and control IDs
+// Control IDs
 const ID_CLEAN_BTN: usize = 101;
 const ID_LISTVIEW: usize = 102;
 const ID_STATUS_LABEL: usize = 103;
@@ -92,7 +104,7 @@ const ID_STATUS_LABEL: usize = 103;
 const IDM_FILE_SETTINGS: usize = 201;
 const IDM_FILE_EXIT: usize = 202;
 const IDM_VIEW_TOPMOST: usize = 203;
-const IDM_HELP_WEBSITE: usize = 204;
+const IDM_VIEW_DARKTHEME: usize = 204;
 const IDM_HELP_ABOUT: usize = 205;
 const IDM_TRAY_SHOWHIDE: usize = 206;
 const IDM_TRAY_CLEAN: usize = 207;
@@ -107,6 +119,16 @@ const IDM_REGION_REGISTRY: usize = 307;
 const IDM_REGION_VOLUME: usize = 308;
 const IDM_REGION_ALL: usize = 309;
 const IDM_REGION_DEFAULT: usize = 310;
+
+// Settings Dialog IDs
+const IDD_SET_AUTOCLEAN_CHK: usize = 401;
+const IDD_SET_LIMIT_EDIT: usize = 402;
+const IDD_SET_INTERVAL_CHK: usize = 403;
+const IDD_SET_INTERVAL_EDIT: usize = 404;
+const IDD_SET_TOPMOST_CHK: usize = 405;
+const IDD_SET_DARKTHEME_CHK: usize = 406;
+const IDD_SET_SAVE_BTN: usize = 407;
+const IDD_SET_CANCEL_BTN: usize = 408;
 
 #[repr(C)]
 struct WNDCLASSEXW {
@@ -229,6 +251,7 @@ extern "system" {
     fn KillTimer(hWnd: HWND, uIDEvent: usize) -> i32;
     fn SendMessageW(hWnd: HWND, Msg: u32, wParam: WPARAM, lParam: LPARAM) -> LRESULT;
     fn SetWindowTextW(hWnd: HWND, lpString: *const u16) -> i32;
+    fn GetWindowTextW(hWnd: HWND, lpString: *mut u16, nMaxCount: i32) -> i32;
     fn LoadCursorW(hInstance: HINSTANCE, lpCursorName: *const u16) -> HCURSOR;
     fn GetModuleHandleW(lpModuleName: *const u16) -> HINSTANCE;
     fn GetDlgItem(hDlg: HWND, nIDDlgItem: i32) -> HWND;
@@ -257,11 +280,17 @@ extern "system" {
         cy: i32,
         uFlags: u32,
     ) -> i32;
+    fn DestroyWindow(hWnd: HWND) -> i32;
+    fn InvalidateRect(hWnd: HWND, lpRect: *const std::ffi::c_void, bErase: i32) -> i32;
 }
 
 #[link(name = "gdi32")]
 extern "system" {
     fn GetStockObject(i: i32) -> HFONT;
+    fn CreateSolidBrush(color: u32) -> HBRUSH;
+    fn SetTextColor(hdc: HDC, color: u32) -> u32;
+    fn SetBkColor(hdc: HDC, color: u32) -> u32;
+    fn SetBkMode(hdc: HDC, mode: i32) -> i32;
 }
 
 #[link(name = "comctl32")]
@@ -278,10 +307,17 @@ fn to_wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(std::iter::once(0)).collect()
 }
 
+fn rgb(r: u8, g: u8, b: u8) -> u32 {
+    (r as u32) | ((g as u32) << 8) | ((b as u32) << 16)
+}
+
 static mut CURRENT_MASK: u32 = REDUCT_MASK_DEFAULT;
 static mut IS_ALWAYS_ON_TOP: bool = false;
+static mut IS_DARK_THEME: bool = true;
 static mut LAST_CLEAN_INSTANT: Option<Instant> = None;
 static mut MAIN_MENU: HMENU = ptr::null_mut();
+static mut BRUSH_DARK_BG: HBRUSH = ptr::null_mut();
+static mut BRUSH_DARK_CARD: HBRUSH = ptr::null_mut();
 
 unsafe fn build_window_menu() -> HMENU {
     let hmenu_bar = CreateMenu();
@@ -298,7 +334,7 @@ unsafe fn build_window_menu() -> HMENU {
     AppendMenuW(hmenu_file, MF_STRING, IDM_FILE_EXIT, to_wide("Exit").as_ptr());
     AppendMenuW(hmenu_bar, MF_POPUP, hmenu_file as usize, to_wide("File").as_ptr());
 
-    // 2. Clean Areas Menu (direct quick selection)
+    // 2. Clean Areas Menu
     let hmenu_areas = CreatePopupMenu();
     AppendMenuW(hmenu_areas, MF_STRING, IDM_REGION_WORKINGSET, to_wide("Working set").as_ptr());
     AppendMenuW(hmenu_areas, MF_STRING, IDM_REGION_FILECACHE, to_wide("System file cache").as_ptr());
@@ -316,11 +352,11 @@ unsafe fn build_window_menu() -> HMENU {
     // 3. View Menu
     let hmenu_view = CreatePopupMenu();
     AppendMenuW(hmenu_view, MF_STRING, IDM_VIEW_TOPMOST, to_wide("Always on top").as_ptr());
+    AppendMenuW(hmenu_view, MF_STRING, IDM_VIEW_DARKTHEME, to_wide("Dark theme").as_ptr());
     AppendMenuW(hmenu_bar, MF_POPUP, hmenu_view as usize, to_wide("View").as_ptr());
 
     // 4. Help Menu
     let hmenu_help = CreatePopupMenu();
-    AppendMenuW(hmenu_help, MF_STRING, IDM_HELP_WEBSITE, to_wide("Website").as_ptr());
     AppendMenuW(hmenu_help, MF_STRING, IDM_HELP_ABOUT, to_wide("About\tF1").as_ptr());
     AppendMenuW(hmenu_bar, MF_POPUP, hmenu_help as usize, to_wide("Help").as_ptr());
 
@@ -353,6 +389,12 @@ unsafe fn update_menu_checks(hmenu: HMENU) {
         IDM_VIEW_TOPMOST as u32,
         if IS_ALWAYS_ON_TOP { MF_CHECKED } else { MF_UNCHECKED },
     );
+
+    CheckMenuItem(
+        hmenu,
+        IDM_VIEW_DARKTHEME as u32,
+        if IS_DARK_THEME { MF_CHECKED } else { MF_UNCHECKED },
+    );
 }
 
 unsafe fn init_listview(hwnd_lv: HWND) {
@@ -363,7 +405,8 @@ unsafe fn init_listview(hwnd_lv: HWND) {
         (LVS_EX_FULLROWSELECT | LVS_EX_DOUBLEBUFFER) as LPARAM,
     );
 
-    // Column 0: Label (~125 px)
+    apply_theme_to_listview(hwnd_lv);
+
     let mut col = LVCOLUMNW {
         mask: LVCF_FMT | LVCF_WIDTH,
         fmt: LVCFMT_LEFT,
@@ -376,13 +419,11 @@ unsafe fn init_listview(hwnd_lv: HWND) {
     };
     SendMessageW(hwnd_lv, LVM_INSERTCOLUMNW, 0, &col as *const _ as LPARAM);
 
-    // Column 1: Value (~100 px, right aligned)
     col.fmt = LVCFMT_RIGHT;
     col.cx = 95;
     col.iSubItem = 1;
     SendMessageW(hwnd_lv, LVM_INSERTCOLUMNW, 1, &col as *const _ as LPARAM);
 
-    // Insert 12 rows matching the classic Mem Reduct 3-group layout:
     let rows = [
         "Physical memory",
         "  Usage",
@@ -417,6 +458,18 @@ unsafe fn init_listview(hwnd_lv: HWND) {
             iGroup: 0,
         };
         SendMessageW(hwnd_lv, LVM_INSERTITEMW, 0, &item as *const _ as LPARAM);
+    }
+}
+
+unsafe fn apply_theme_to_listview(hwnd_lv: HWND) {
+    if IS_DARK_THEME {
+        SendMessageW(hwnd_lv, LVM_SETBKCOLOR, 0, rgb(28, 29, 34) as LPARAM);
+        SendMessageW(hwnd_lv, LVM_SETTEXTBKCOLOR, 0, rgb(28, 29, 34) as LPARAM);
+        SendMessageW(hwnd_lv, LVM_SETTEXTCOLOR, 0, rgb(235, 238, 245) as LPARAM);
+    } else {
+        SendMessageW(hwnd_lv, LVM_SETBKCOLOR, 0, rgb(255, 255, 255) as LPARAM);
+        SendMessageW(hwnd_lv, LVM_SETTEXTBKCOLOR, 0, rgb(255, 255, 255) as LPARAM);
+        SendMessageW(hwnd_lv, LVM_SETTEXTCOLOR, 0, rgb(0, 0, 0) as LPARAM);
     }
 }
 
@@ -504,12 +557,28 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
             let hinst = GetModuleHandleW(ptr::null());
             let default_font = GetStockObject(DEFAULT_GUI_FONT);
 
-            // 1. Build and attach Window Menu
+            let config = Config::load();
+            CURRENT_MASK = if config.reduct_mask != 0 {
+                config.reduct_mask
+            } else {
+                REDUCT_MASK_DEFAULT
+            };
+            IS_DARK_THEME = config.dark_theme;
+            IS_ALWAYS_ON_TOP = config.always_on_top;
+
+            BRUSH_DARK_BG = CreateSolidBrush(rgb(20, 21, 26));
+            BRUSH_DARK_CARD = CreateSolidBrush(rgb(28, 29, 34));
+
+            // Attach Window Menu
             MAIN_MENU = build_window_menu();
             update_menu_checks(MAIN_MENU);
             SetMenu(hwnd, MAIN_MENU);
 
-            // 2. Create ListView (IDC_LISTVIEW): exactly matching Mem Reduct
+            if IS_ALWAYS_ON_TOP {
+                SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE);
+            }
+
+            // ListView
             let hwnd_lv = CreateWindowExW(
                 0,
                 to_wide("SysListView32").as_ptr(),
@@ -527,16 +596,16 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
             SendMessageW(hwnd_lv, WM_SETFONT, default_font as WPARAM, 1);
             init_listview(hwnd_lv);
 
-            // 3. Create Big Clean Memory Button (IDC_CLEAN_BTN)
+            // Clean Memory Button
             let hwnd_btn = CreateWindowExW(
                 0,
                 to_wide("BUTTON").as_ptr(),
-                to_wide("Clean memory").as_ptr(),
+                to_wide("⚡ Clean memory").as_ptr(),
                 WS_CHILD | WS_VISIBLE | BS_DEFPUSHBUTTON,
                 8,
                 232,
                 244,
-                26,
+                28,
                 hwnd,
                 ID_CLEAN_BTN as HMENU,
                 hinst,
@@ -544,14 +613,14 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
             );
             SendMessageW(hwnd_btn, WM_SETFONT, default_font as WPARAM, 1);
 
-            // 4. Create Status Label (IDC_STATUS_LABEL)
+            // Status Label
             let hwnd_lbl = CreateWindowExW(
                 0,
                 to_wide("STATIC").as_ptr(),
                 to_wide("Ready").as_ptr(),
                 WS_CHILD | WS_VISIBLE,
                 8,
-                264,
+                266,
                 244,
                 18,
                 hwnd,
@@ -561,7 +630,7 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
             );
             SendMessageW(hwnd_lbl, WM_SETFONT, default_font as WPARAM, 1);
 
-            // 5. System Tray Icon
+            // Tray Icon
             let mut nid: NOTIFYICONDATAW = std::mem::zeroed();
             nid.cbSize = size_of::<NOTIFYICONDATAW>() as u32;
             nid.hWnd = hwnd;
@@ -574,17 +643,26 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
             }
             Shell_NotifyIconW(NIM_ADD, &mut nid);
 
-            // 6. Set timer every 1000ms
             SetTimer(hwnd, 1, 1000, None);
             update_listview_values(hwnd_lv);
             0
+        }
+        WM_CTLCOLORSTATIC | WM_CTLCOLORDLG | WM_CTLCOLORBTN => {
+            if IS_DARK_THEME {
+                let hdc = wparam as HDC;
+                SetTextColor(hdc, rgb(235, 238, 245));
+                SetBkColor(hdc, rgb(20, 21, 26));
+                SetBkMode(hdc, TRANSPARENT);
+                return BRUSH_DARK_BG as LRESULT;
+            }
+            DefWindowProcW(hwnd, msg, wparam, lparam)
         }
         WM_TIMER => {
             let hwnd_lv = GetDlgItem(hwnd, ID_LISTVIEW as i32);
             update_listview_values(hwnd_lv);
             update_tray_icon(hwnd);
 
-            // Check auto-reduct
+            // Auto-reduct
             let config = Config::load();
             if config.autoreduct_enable {
                 if let Ok(info) = get_memory_info() {
@@ -656,25 +734,32 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
                     };
                     SetWindowPos(hwnd, insert_after, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE);
                     update_menu_checks(MAIN_MENU);
+
+                    let mut cfg = Config::load();
+                    cfg.always_on_top = IS_ALWAYS_ON_TOP;
+                    let _ = cfg.save();
+                }
+                IDM_VIEW_DARKTHEME => {
+                    IS_DARK_THEME = !IS_DARK_THEME;
+                    update_menu_checks(MAIN_MENU);
+                    let hwnd_lv = GetDlgItem(hwnd, ID_LISTVIEW as i32);
+                    apply_theme_to_listview(hwnd_lv);
+                    InvalidateRect(hwnd, ptr::null(), 1);
+
+                    let mut cfg = Config::load();
+                    cfg.dark_theme = IS_DARK_THEME;
+                    let _ = cfg.save();
                 }
                 IDM_FILE_SETTINGS => {
-                    MessageBoxW(
-                        hwnd,
-                        to_wide("Settings can be customized in memreduct.toml or via 'Clean areas' menu.").as_ptr(),
-                        to_wide("Mem Reduct - Settings").as_ptr(),
-                        0,
-                    );
+                    open_settings_dialog(hwnd);
                 }
                 IDM_FILE_EXIT => {
                     PostQuitMessage(0);
                 }
-                IDM_HELP_WEBSITE => {
-                    // Open website
-                }
                 IDM_HELP_ABOUT => {
                     MessageBoxW(
                         hwnd,
-                        to_wide("Mem Reduct v3.5.3 (Rust)\n\nOriginal utility: (c) 2011-2026 Henry++\nRewritten in pure Rust for Windows & Linux.").as_ptr(),
+                        to_wide("⚡ Mem Reduct v3.5.3 (Rust)\n\nOriginal utility: (c) 2011-2026 Henry++\nRewritten in pure Rust for Windows & Linux.\nZero dependencies, maximum performance.").as_ptr(),
                         to_wide("About Mem Reduct").as_ptr(),
                         0,
                     );
@@ -709,8 +794,9 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
                 let htray_menu = CreatePopupMenu();
                 AppendMenuW(htray_menu, MF_STRING, IDM_TRAY_SHOWHIDE, to_wide("Show/Hide").as_ptr());
                 AppendMenuW(htray_menu, MF_SEPARATOR, 0, ptr::null());
-                AppendMenuW(htray_menu, MF_STRING, IDM_TRAY_CLEAN, to_wide("Clean memory").as_ptr());
+                AppendMenuW(htray_menu, MF_STRING, IDM_TRAY_CLEAN, to_wide("⚡ Clean memory").as_ptr());
                 AppendMenuW(htray_menu, MF_SEPARATOR, 0, ptr::null());
+                AppendMenuW(htray_menu, MF_STRING, IDM_FILE_SETTINGS, to_wide("Settings").as_ptr());
                 AppendMenuW(htray_menu, MF_STRING, IDM_HELP_ABOUT, to_wide("About").as_ptr());
                 AppendMenuW(htray_menu, MF_STRING, IDM_FILE_EXIT, to_wide("Exit").as_ptr());
 
@@ -737,7 +823,7 @@ unsafe fn execute_gui_clean(hwnd: HWND) {
     let hwnd_lbl = GetDlgItem(hwnd, ID_STATUS_LABEL as i32);
     let hwnd_lv = GetDlgItem(hwnd, ID_LISTVIEW as i32);
 
-    SetWindowTextW(hwnd_lbl, to_wide("Cleaning memory...").as_ptr());
+    SetWindowTextW(hwnd_lbl, to_wide("⚡ Cleaning memory...").as_ptr());
 
     match clean_memory(CURRENT_MASK) {
         Ok(rep) => {
@@ -754,6 +840,312 @@ unsafe fn execute_gui_clean(hwnd: HWND) {
             let err_text = format!("Error: {}", e);
             SetWindowTextW(hwnd_lbl, to_wide(&err_text).as_ptr());
         }
+    }
+}
+
+// Settings Dialog Window
+static mut HWND_PARENT_MAIN: HWND = ptr::null_mut();
+
+unsafe extern "system" fn settings_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+    match msg {
+        WM_CREATE => {
+            let hinst = GetModuleHandleW(ptr::null());
+            let default_font = GetStockObject(DEFAULT_GUI_FONT);
+            let cfg = Config::load();
+
+            // Group: Autoreduct
+            let h_grp1 = CreateWindowExW(
+                0,
+                to_wide("BUTTON").as_ptr(),
+                to_wide("Memory management").as_ptr(),
+                WS_CHILD | WS_VISIBLE | BS_GROUPBOX,
+                10,
+                10,
+                295,
+                100,
+                hwnd,
+                ptr::null_mut(),
+                hinst,
+                ptr::null_mut(),
+            );
+            SendMessageW(h_grp1, WM_SETFONT, default_font as WPARAM, 1);
+
+            // Checkbox: Clean above
+            let h_chk_limit = CreateWindowExW(
+                0,
+                to_wide("BUTTON").as_ptr(),
+                to_wide("Clean when above (%):").as_ptr(),
+                WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX,
+                20,
+                32,
+                180,
+                20,
+                hwnd,
+                IDD_SET_AUTOCLEAN_CHK as HMENU,
+                hinst,
+                ptr::null_mut(),
+            );
+            SendMessageW(h_chk_limit, WM_SETFONT, default_font as WPARAM, 1);
+            if cfg.autoreduct_enable {
+                SendMessageW(h_chk_limit, 0x00F1 /* BM_SETCHECK */, 1, 0);
+            }
+
+            // Edit: Limit value
+            let h_edit_limit = CreateWindowExW(
+                0,
+                to_wide("EDIT").as_ptr(),
+                to_wide(&cfg.autoreduct_limit.to_string()).as_ptr(),
+                WS_CHILD | WS_VISIBLE | WS_BORDER | ES_NUMBER | ES_AUTOHSCROLL,
+                210,
+                32,
+                45,
+                20,
+                hwnd,
+                IDD_SET_LIMIT_EDIT as HMENU,
+                hinst,
+                ptr::null_mut(),
+            );
+            SendMessageW(h_edit_limit, WM_SETFONT, default_font as WPARAM, 1);
+
+            // Checkbox: Clean interval
+            let h_chk_int = CreateWindowExW(
+                0,
+                to_wide("BUTTON").as_ptr(),
+                to_wide("Clean every (minutes):").as_ptr(),
+                WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX,
+                20,
+                65,
+                180,
+                20,
+                hwnd,
+                IDD_SET_INTERVAL_CHK as HMENU,
+                hinst,
+                ptr::null_mut(),
+            );
+            SendMessageW(h_chk_int, WM_SETFONT, default_font as WPARAM, 1);
+            if cfg.autoreduct_interval_enable {
+                SendMessageW(h_chk_int, 0x00F1, 1, 0);
+            }
+
+            // Edit: Interval value
+            let h_edit_int = CreateWindowExW(
+                0,
+                to_wide("EDIT").as_ptr(),
+                to_wide(&cfg.autoreduct_interval_minutes.to_string()).as_ptr(),
+                WS_CHILD | WS_VISIBLE | WS_BORDER | ES_NUMBER | ES_AUTOHSCROLL,
+                210,
+                65,
+                45,
+                20,
+                hwnd,
+                IDD_SET_INTERVAL_EDIT as HMENU,
+                hinst,
+                ptr::null_mut(),
+            );
+            SendMessageW(h_edit_int, WM_SETFONT, default_font as WPARAM, 1);
+
+            // Group: Appearance
+            let h_grp2 = CreateWindowExW(
+                0,
+                to_wide("BUTTON").as_ptr(),
+                to_wide("Appearance & Options").as_ptr(),
+                WS_CHILD | WS_VISIBLE | BS_GROUPBOX,
+                10,
+                120,
+                295,
+                75,
+                hwnd,
+                ptr::null_mut(),
+                hinst,
+                ptr::null_mut(),
+            );
+            SendMessageW(h_grp2, WM_SETFONT, default_font as WPARAM, 1);
+
+            let h_chk_top = CreateWindowExW(
+                0,
+                to_wide("BUTTON").as_ptr(),
+                to_wide("Always on top").as_ptr(),
+                WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX,
+                20,
+                142,
+                200,
+                20,
+                hwnd,
+                IDD_SET_TOPMOST_CHK as HMENU,
+                hinst,
+                ptr::null_mut(),
+            );
+            SendMessageW(h_chk_top, WM_SETFONT, default_font as WPARAM, 1);
+            if cfg.always_on_top {
+                SendMessageW(h_chk_top, 0x00F1, 1, 0);
+            }
+
+            let h_chk_dark = CreateWindowExW(
+                0,
+                to_wide("BUTTON").as_ptr(),
+                to_wide("Use dark theme").as_ptr(),
+                WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX,
+                20,
+                166,
+                200,
+                20,
+                hwnd,
+                IDD_SET_DARKTHEME_CHK as HMENU,
+                hinst,
+                ptr::null_mut(),
+            );
+            SendMessageW(h_chk_dark, WM_SETFONT, default_font as WPARAM, 1);
+            if cfg.dark_theme {
+                SendMessageW(h_chk_dark, 0x00F1, 1, 0);
+            }
+
+            // Buttons: Save & Cancel
+            let h_btn_save = CreateWindowExW(
+                0,
+                to_wide("BUTTON").as_ptr(),
+                to_wide("Save & Apply").as_ptr(),
+                WS_CHILD | WS_VISIBLE | BS_DEFPUSHBUTTON,
+                115,
+                210,
+                95,
+                26,
+                hwnd,
+                IDD_SET_SAVE_BTN as HMENU,
+                hinst,
+                ptr::null_mut(),
+            );
+            SendMessageW(h_btn_save, WM_SETFONT, default_font as WPARAM, 1);
+
+            let h_btn_cancel = CreateWindowExW(
+                0,
+                to_wide("BUTTON").as_ptr(),
+                to_wide("Cancel").as_ptr(),
+                WS_CHILD | WS_VISIBLE,
+                215,
+                210,
+                90,
+                26,
+                hwnd,
+                IDD_SET_CANCEL_BTN as HMENU,
+                hinst,
+                ptr::null_mut(),
+            );
+            SendMessageW(h_btn_cancel, WM_SETFONT, default_font as WPARAM, 1);
+            0
+        }
+        WM_CTLCOLORSTATIC | WM_CTLCOLORDLG | WM_CTLCOLORBTN => {
+            if IS_DARK_THEME {
+                let hdc = wparam as HDC;
+                SetTextColor(hdc, rgb(235, 238, 245));
+                SetBkColor(hdc, rgb(20, 21, 26));
+                SetBkMode(hdc, TRANSPARENT);
+                return BRUSH_DARK_BG as LRESULT;
+            }
+            DefWindowProcW(hwnd, msg, wparam, lparam)
+        }
+        WM_COMMAND => {
+            let id = wparam & 0xFFFF;
+            if id == IDD_SET_CANCEL_BTN {
+                DestroyWindow(hwnd);
+            } else if id == IDD_SET_SAVE_BTN {
+                let mut cfg = Config::load();
+
+                let chk_auto = GetDlgItem(hwnd, IDD_SET_AUTOCLEAN_CHK as i32);
+                cfg.autoreduct_enable = SendMessageW(chk_auto, 0x00F0 /* BM_GETCHECK */, 0, 0) == 1;
+
+                let edit_limit = GetDlgItem(hwnd, IDD_SET_LIMIT_EDIT as i32);
+                let mut buf = [0u16; 16];
+                GetWindowTextW(edit_limit, buf.as_mut_ptr(), 16);
+                let s = String::from_utf16_lossy(&buf);
+                if let Ok(v) = s.trim_matches(char::from(0)).trim().parse::<u8>() {
+                    cfg.autoreduct_limit = v.min(100);
+                }
+
+                let chk_int = GetDlgItem(hwnd, IDD_SET_INTERVAL_CHK as i32);
+                cfg.autoreduct_interval_enable = SendMessageW(chk_int, 0x00F0, 0, 0) == 1;
+
+                let edit_int = GetDlgItem(hwnd, IDD_SET_INTERVAL_EDIT as i32);
+                GetWindowTextW(edit_int, buf.as_mut_ptr(), 16);
+                let s_int = String::from_utf16_lossy(&buf);
+                if let Ok(v) = s_int.trim_matches(char::from(0)).trim().parse::<u64>() {
+                    cfg.autoreduct_interval_minutes = v;
+                }
+
+                let chk_top = GetDlgItem(hwnd, IDD_SET_TOPMOST_CHK as i32);
+                cfg.always_on_top = SendMessageW(chk_top, 0x00F0, 0, 0) == 1;
+                IS_ALWAYS_ON_TOP = cfg.always_on_top;
+
+                let chk_dark = GetDlgItem(hwnd, IDD_SET_DARKTHEME_CHK as i32);
+                cfg.dark_theme = SendMessageW(chk_dark, 0x00F0, 0, 0) == 1;
+                IS_DARK_THEME = cfg.dark_theme;
+
+                cfg.reduct_mask = CURRENT_MASK;
+                let _ = cfg.save();
+
+                // Apply to parent
+                if !HWND_PARENT_MAIN.is_null() {
+                    let insert_after = if IS_ALWAYS_ON_TOP {
+                        HWND_TOPMOST
+                    } else {
+                        HWND_NOTOPMOST
+                    };
+                    SetWindowPos(HWND_PARENT_MAIN, insert_after, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE);
+                    update_menu_checks(MAIN_MENU);
+                    let hwnd_lv = GetDlgItem(HWND_PARENT_MAIN, ID_LISTVIEW as i32);
+                    apply_theme_to_listview(hwnd_lv);
+                    InvalidateRect(HWND_PARENT_MAIN, ptr::null(), 1);
+                }
+
+                DestroyWindow(hwnd);
+            }
+            0
+        }
+        WM_DESTROY => 0,
+        _ => DefWindowProcW(hwnd, msg, wparam, lparam),
+    }
+}
+
+unsafe fn open_settings_dialog(hwnd_parent: HWND) {
+    HWND_PARENT_MAIN = hwnd_parent;
+    let hinst = GetModuleHandleW(ptr::null());
+    let class_name = to_wide("MemReductSettingsUI");
+
+    let wc = WNDCLASSEXW {
+        cbSize: size_of::<WNDCLASSEXW>() as u32,
+        style: 0,
+        lpfnWndProc: settings_wnd_proc,
+        cbClsExtra: 0,
+        cbWndExtra: 0,
+        hInstance: hinst,
+        hIcon: ptr::null_mut(),
+        hCursor: LoadCursorW(ptr::null_mut(), IDC_ARROW),
+        hbrBackground: (COLOR_BTNFACE + 1) as HBRUSH,
+        lpszMenuName: ptr::null(),
+        lpszClassName: class_name.as_ptr(),
+        hIconSm: ptr::null_mut(),
+    };
+
+    RegisterClassExW(&wc);
+
+    let title = to_wide("Mem Reduct - Settings");
+    let hwnd_dlg = CreateWindowExW(
+        0,
+        class_name.as_ptr(),
+        title.as_ptr(),
+        WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_VISIBLE,
+        200,
+        200,
+        330,
+        285,
+        hwnd_parent,
+        ptr::null_mut(),
+        hinst,
+        ptr::null_mut(),
+    );
+
+    if !hwnd_dlg.is_null() {
+        ShowWindow(hwnd_dlg, SW_SHOW);
+        UpdateWindow(hwnd_dlg);
     }
 }
 
@@ -786,7 +1178,6 @@ pub fn run_gui() -> Result<(), String> {
         RegisterClassExW(&wc);
 
         let window_title = to_wide("Mem Reduct");
-        // Compact dimensions matching original 224x214 dialog units (~275x335 pixels)
         let hwnd = CreateWindowExW(
             0,
             class_name.as_ptr(),

@@ -1,8 +1,7 @@
 use crate::cleaner::{
-    self, clean_memory, CleanReport, REDUCT_COMBINEMEMORYLISTS,
-    REDUCT_MASK_ALL, REDUCT_MASK_DEFAULT, REDUCT_MODIFIEDFILECACHE, REDUCT_MODIFIEDLIST,
-    REDUCT_REGISTRYCACHE, REDUCT_STANDBYLIST, REDUCT_STANDBYPRIORITY0LIST, REDUCT_SYSTEMFILECACHE,
-    REDUCT_WORKINGSET,
+    self, clean_memory, CleanReport, REDUCT_COMBINEMEMORYLISTS, REDUCT_MASK_ALL,
+    REDUCT_MASK_DEFAULT, REDUCT_MODIFIEDFILECACHE, REDUCT_MODIFIEDLIST, REDUCT_REGISTRYCACHE,
+    REDUCT_STANDBYLIST, REDUCT_STANDBYPRIORITY0LIST, REDUCT_SYSTEMFILECACHE, REDUCT_WORKINGSET,
 };
 use crate::config::Config;
 use crate::system::{self, format_bytes, MemoryInfo};
@@ -15,6 +14,27 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
+
+pub const COLOR_MAGENTA: &str = "\x1B[35m";
+pub const COLOR_BLUE: &str = "\x1B[34m";
+pub const COLOR_WHITE_BOLD: &str = "\x1B[1;37m";
+
+#[derive(Debug, PartialEq, Eq)]
+enum TuiView {
+    Dashboard,
+    Settings,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum Key {
+    Char(char),
+    Up,
+    Down,
+    Left,
+    Right,
+    Enter,
+    Esc,
+}
 
 #[cfg(unix)]
 mod raw_terminal {
@@ -80,16 +100,15 @@ pub fn run_interactive_tui(running: Arc<AtomicBool>) {
     #[cfg(unix)]
     let _guard = raw_terminal::RawGuard::enter();
 
-    let config = Config::load();
-    let mut current_mask = config.reduct_mask;
-    if current_mask == 0 {
-        current_mask = REDUCT_MASK_DEFAULT;
-    }
+    let mut config = Config::load();
+    let mut current_mask = if config.reduct_mask != 0 {
+        config.reduct_mask
+    } else {
+        REDUCT_MASK_DEFAULT
+    };
 
-    let mut auto_clean_enabled = config.autoreduct_enable;
-    let mut auto_limit = config.autoreduct_limit;
-    let mut auto_interval_enabled = config.autoreduct_interval_enable;
-    let mut auto_interval_mins = config.autoreduct_interval_minutes;
+    let mut view = TuiView::Dashboard;
+    let mut settings_cursor: usize = 0;
 
     let mut last_clean = Instant::now() - Duration::from_secs(config.cooldown_seconds);
     let mut last_interval_clean = Instant::now();
@@ -109,12 +128,18 @@ pub fn run_interactive_tui(running: Arc<AtomicBool>) {
             let mut triggered = false;
             let mut reason = "";
 
-            if auto_clean_enabled && mem_info.percent_physical >= auto_limit && last_clean.elapsed() >= cooldown {
+            if config.autoreduct_enable
+                && mem_info.percent_physical >= config.autoreduct_limit
+                && last_clean.elapsed() >= cooldown
+            {
                 triggered = true;
-                reason = "Threshold auto-clean";
-            } else if auto_interval_enabled && last_interval_clean.elapsed() >= Duration::from_secs(auto_interval_mins * 60) {
+                reason = "Threshold reached";
+            } else if config.autoreduct_interval_enable
+                && last_interval_clean.elapsed()
+                    >= Duration::from_secs(config.autoreduct_interval_minutes * 60)
+            {
                 triggered = true;
-                reason = "Interval auto-clean";
+                reason = "Interval elapsed";
             }
 
             if triggered {
@@ -122,7 +147,7 @@ pub fn run_interactive_tui(running: Arc<AtomicBool>) {
                     Ok(report) => {
                         let freed = format_bytes(report.bytes_freed);
                         status_msg = Some((
-                            format!("{} [Auto]: Reclaimed {} in {:.1?}", reason, freed, report.duration),
+                            format!("Auto-clean ({}) freed {} in {:.1?}", reason, freed, report.duration),
                             COLOR_GREEN,
                         ));
                         last_report = Some(report);
@@ -130,121 +155,178 @@ pub fn run_interactive_tui(running: Arc<AtomicBool>) {
                         last_interval_clean = Instant::now();
                     }
                     Err(e) => {
-                        status_msg = Some((format!("Auto-clean failed: {}", e), COLOR_RED));
+                        status_msg = Some((format!("Auto-clean error: {}", e), COLOR_RED));
                     }
                 }
             }
         }
 
-        // Render UI
-        render_dashboard(
-            &mem_info,
-            current_mask,
-            auto_clean_enabled,
-            auto_limit,
-            auto_interval_enabled,
-            auto_interval_mins,
-            last_report.as_ref(),
-            status_msg.as_ref(),
-        );
+        // Render Current View
+        match view {
+            TuiView::Dashboard => {
+                render_dashboard(
+                    &mem_info,
+                    current_mask,
+                    &config,
+                    last_report.as_ref(),
+                    status_msg.as_ref(),
+                );
+            }
+            TuiView::Settings => {
+                render_settings_view(&config, current_mask, settings_cursor, status_msg.as_ref());
+            }
+        }
 
-        // Read keypress (non-blocking with timeout)
-        let key = read_key();
-        match key {
-            Some('q') | Some('Q') | Some('\x1B') => {
-                break;
-            }
-            Some(' ') | Some('c') | Some('C') => {
-                // Trigger Clean
-                match clean_memory(current_mask) {
-                    Ok(report) => {
-                        let freed = format_bytes(report.bytes_freed);
-                        status_msg = Some((
-                            format!("Success: Reclaimed {} in {:.1?}", freed, report.duration),
-                            COLOR_GREEN,
-                        ));
-                        last_report = Some(report);
-                        last_clean = Instant::now();
-                        last_interval_clean = Instant::now();
+        // Process Key Input
+        if let Some(key) = read_key() {
+            match view {
+                TuiView::Dashboard => match key {
+                    Key::Char('q') | Key::Char('Q') => break,
+                    Key::Esc => break,
+                    Key::Char('s') | Key::Char('S') => {
+                        view = TuiView::Settings;
+                        settings_cursor = 0;
+                        status_msg = None;
                     }
-                    Err(e) => {
-                        status_msg = Some((format!("Clean error: {}", e), COLOR_RED));
-                    }
-                }
-            }
-            Some('f') | Some('F') => {
-                // Full Clean
-                match clean_memory(REDUCT_MASK_ALL) {
-                    Ok(report) => {
-                        let freed = format_bytes(report.bytes_freed);
-                        status_msg = Some((
-                            format!("Full Clean: Reclaimed {} in {:.1?}", freed, report.duration),
-                            COLOR_GREEN,
-                        ));
-                        last_report = Some(report);
-                        last_clean = Instant::now();
-                        last_interval_clean = Instant::now();
-                    }
-                    Err(e) => {
-                        status_msg = Some((format!("Clean error: {}", e), COLOR_RED));
-                    }
-                }
-            }
-            Some('1') => current_mask ^= REDUCT_WORKINGSET,
-            Some('2') => current_mask ^= REDUCT_SYSTEMFILECACHE,
-            Some('3') => current_mask ^= REDUCT_STANDBYPRIORITY0LIST,
-            Some('4') => current_mask ^= REDUCT_STANDBYLIST,
-            Some('5') => current_mask ^= REDUCT_MODIFIEDLIST,
-            Some('6') => current_mask ^= REDUCT_COMBINEMEMORYLISTS,
-            Some('7') => current_mask ^= REDUCT_REGISTRYCACHE,
-            Some('8') => current_mask ^= REDUCT_MODIFIEDFILECACHE,
-            Some('a') | Some('A') => {
-                auto_clean_enabled = !auto_clean_enabled;
-                status_msg = Some((
-                    format!(
-                        "Auto-clean threshold {}",
-                        if auto_clean_enabled { "ENABLED" } else { "DISABLED" }
-                    ),
-                    COLOR_YELLOW,
-                ));
-            }
-            Some('t') | Some('T') => {
-                auto_limit = match auto_limit {
-                    70 => 80,
-                    80 => 85,
-                    85 => 90,
-                    90 => 95,
-                    _ => 70,
-                };
-                status_msg = Some((format!("Threshold set to {}%", auto_limit), COLOR_CYAN));
-            }
-            Some('i') | Some('I') => {
-                if !auto_interval_enabled {
-                    auto_interval_enabled = true;
-                } else if auto_interval_mins == 30 {
-                    auto_interval_mins = 60;
-                } else if auto_interval_mins == 60 {
-                    auto_interval_mins = 15;
-                } else {
-                    auto_interval_enabled = false;
-                    auto_interval_mins = 30;
-                }
-                status_msg = Some((
-                    format!(
-                        "Auto-clean interval: {}",
-                        if auto_interval_enabled {
-                            format!("ON ({} min)", auto_interval_mins)
-                        } else {
-                            "OFF".to_string()
+                    Key::Char(' ') | Key::Char('c') | Key::Char('C') => {
+                        match clean_memory(current_mask) {
+                            Ok(report) => {
+                                let freed = format_bytes(report.bytes_freed);
+                                status_msg = Some((
+                                    format!("Cleaned: {} freed ({}% -> {}%) in {:.1?}", freed, report.mem_before.percent_physical, report.mem_after.percent_physical, report.duration),
+                                    COLOR_GREEN,
+                                ));
+                                last_report = Some(report);
+                                last_clean = Instant::now();
+                                last_interval_clean = Instant::now();
+                            }
+                            Err(e) => {
+                                status_msg = Some((format!("Error: {}", e), COLOR_RED));
+                            }
                         }
-                    ),
-                    COLOR_YELLOW,
-                ));
+                    }
+                    Key::Char('f') | Key::Char('F') => {
+                        match clean_memory(REDUCT_MASK_ALL) {
+                            Ok(report) => {
+                                let freed = format_bytes(report.bytes_freed);
+                                status_msg = Some((
+                                    format!("Full Clean: {} freed in {:.1?}", freed, report.duration),
+                                    COLOR_GREEN,
+                                ));
+                                last_report = Some(report);
+                                last_clean = Instant::now();
+                                last_interval_clean = Instant::now();
+                            }
+                            Err(e) => {
+                                status_msg = Some((format!("Error: {}", e), COLOR_RED));
+                            }
+                        }
+                    }
+                    Key::Char('1') => current_mask ^= REDUCT_WORKINGSET,
+                    Key::Char('2') => current_mask ^= REDUCT_SYSTEMFILECACHE,
+                    Key::Char('3') => current_mask ^= REDUCT_STANDBYPRIORITY0LIST,
+                    Key::Char('4') => current_mask ^= REDUCT_STANDBYLIST,
+                    Key::Char('5') => current_mask ^= REDUCT_MODIFIEDLIST,
+                    Key::Char('6') => current_mask ^= REDUCT_COMBINEMEMORYLISTS,
+                    Key::Char('7') => current_mask ^= REDUCT_REGISTRYCACHE,
+                    Key::Char('8') => current_mask ^= REDUCT_MODIFIEDFILECACHE,
+                    Key::Char('a') | Key::Char('A') => {
+                        config.autoreduct_enable = !config.autoreduct_enable;
+                        let _ = config.save();
+                        status_msg = Some((
+                            format!("Auto-clean threshold {}", if config.autoreduct_enable { "ENABLED" } else { "DISABLED" }),
+                            COLOR_YELLOW,
+                        ));
+                    }
+                    Key::Char('t') | Key::Char('T') => {
+                        config.autoreduct_limit = match config.autoreduct_limit {
+                            70 => 75,
+                            75 => 80,
+                            80 => 85,
+                            85 => 90,
+                            90 => 95,
+                            _ => 70,
+                        };
+                        let _ = config.save();
+                        status_msg = Some((format!("Threshold set to {}%", config.autoreduct_limit), COLOR_CYAN));
+                    }
+                    Key::Char('i') | Key::Char('I') => {
+                        config.autoreduct_interval_enable = !config.autoreduct_interval_enable;
+                        let _ = config.save();
+                        status_msg = Some((
+                            format!("Periodic interval {}", if config.autoreduct_interval_enable { "ENABLED" } else { "DISABLED" }),
+                            COLOR_YELLOW,
+                        ));
+                    }
+                    _ => {}
+                },
+                TuiView::Settings => match key {
+                    Key::Esc | Key::Char('s') | Key::Char('S') | Key::Char('q') => {
+                        config.reduct_mask = current_mask;
+                        let _ = config.save();
+                        view = TuiView::Dashboard;
+                        status_msg = Some(("Settings saved to memreduct.toml".to_string(), COLOR_GREEN));
+                    }
+                    Key::Up | Key::Char('k') => {
+                        if settings_cursor > 0 {
+                            settings_cursor -= 1;
+                        }
+                    }
+                    Key::Down | Key::Char('j') => {
+                        if settings_cursor < 7 {
+                            settings_cursor += 1;
+                        }
+                    }
+                    Key::Left | Key::Right | Key::Enter | Key::Char(' ') => match settings_cursor {
+                        0 => {
+                            config.autoreduct_enable = !config.autoreduct_enable;
+                        }
+                        1 => {
+                            if key == Key::Left {
+                                config.autoreduct_limit = config.autoreduct_limit.saturating_sub(5).max(50);
+                            } else {
+                                config.autoreduct_limit = (config.autoreduct_limit + 5).min(95);
+                            }
+                        }
+                        2 => {
+                            config.autoreduct_interval_enable = !config.autoreduct_interval_enable;
+                        }
+                        3 => {
+                            if key == Key::Left {
+                                config.autoreduct_interval_minutes = config.autoreduct_interval_minutes.saturating_sub(5).max(5);
+                            } else {
+                                config.autoreduct_interval_minutes = (config.autoreduct_interval_minutes + 5).min(180);
+                            }
+                        }
+                        4 => {
+                            if key == Key::Left {
+                                config.cooldown_seconds = config.cooldown_seconds.saturating_sub(5).max(5);
+                            } else {
+                                config.cooldown_seconds = (config.cooldown_seconds + 5).min(120);
+                            }
+                        }
+                        5 => {
+                            config.dark_theme = !config.dark_theme;
+                        }
+                        6 => {
+                            config = Config::default();
+                            current_mask = config.reduct_mask;
+                            status_msg = Some(("Settings reset to default".to_string(), COLOR_YELLOW));
+                        }
+                        7 => {
+                            config.reduct_mask = current_mask;
+                            let _ = config.save();
+                            view = TuiView::Dashboard;
+                            status_msg = Some(("Saved & applied successfully".to_string(), COLOR_GREEN));
+                        }
+                        _ => {}
+                    },
+                    _ => {}
+                },
             }
-            _ => {}
         }
 
-        thread::sleep(Duration::from_millis(150));
+        thread::sleep(Duration::from_millis(120));
     }
 
     // Show cursor and clear screen
@@ -253,12 +335,29 @@ pub fn run_interactive_tui(running: Arc<AtomicBool>) {
     println!("Mem Reduct closed.");
 }
 
-fn read_key() -> Option<char> {
-    let mut buf = [0u8; 1];
+fn read_key() -> Option<Key> {
+    let mut buf = [0u8; 4];
     let stdin = io::stdin();
     let mut handle = stdin.lock();
+
     match handle.read(&mut buf) {
-        Ok(1) => Some(buf[0] as char),
+        Ok(1) => {
+            let c = buf[0] as char;
+            if buf[0] == 27 {
+                Some(Key::Esc)
+            } else if buf[0] == 10 || buf[0] == 13 {
+                Some(Key::Enter)
+            } else {
+                Some(Key::Char(c))
+            }
+        }
+        Ok(3) if buf[0] == 27 && buf[1] == b'[' => match buf[2] {
+            b'A' => Some(Key::Up),
+            b'B' => Some(Key::Down),
+            b'C' => Some(Key::Right),
+            b'D' => Some(Key::Left),
+            _ => None,
+        },
         _ => None,
     }
 }
@@ -266,153 +365,156 @@ fn read_key() -> Option<char> {
 fn render_dashboard(
     info: &MemoryInfo,
     mask: u32,
-    auto_enabled: bool,
-    auto_limit: u8,
-    interval_enabled: bool,
-    interval_mins: u64,
+    config: &Config,
     last_report: Option<&CleanReport>,
     status_msg: Option<&(String, &'static str)>,
 ) {
     let mut out = String::with_capacity(4096);
     out.push_str("\x1B[H"); // Cursor to top-left
 
-    // Title bar
+    // Stylish Header
     out.push_str(&format!(
-        "{}{}╭────────────────────────────────────────────────────────────╮{}\n",
+        "{}{}╭──────────────────────────────────────────────────────────────╮{}\n",
         COLOR_BOLD, COLOR_CYAN, COLOR_RESET
     ));
     out.push_str(&format!(
-        "{}{}│                Mem Reduct v3.5.3 (Rust)                    │{}\n",
-        COLOR_BOLD, COLOR_CYAN, COLOR_RESET
+        "{}{}│                 ⚡  MEM REDUCT v3.5.3  ⚡                     │{}\n",
+        COLOR_WHITE_BOLD, COLOR_CYAN, COLOR_RESET
     ));
     out.push_str(&format!(
-        "{}{}╰────────────────────────────────────────────────────────────╯{}\n",
+        "{}{}╰──────────────────────────────────────────────────────────────╯{}\n",
         COLOR_BOLD, COLOR_CYAN, COLOR_RESET
     ));
 
-    // Admin privileges notice
-    if !cleaner::is_elevated() {
+    // Privilege indicator
+    if cleaner::is_elevated() {
         out.push_str(&format!(
-            "  {}⚠ Run with sudo / Administrator privileges to clean memory!{}\n",
-            COLOR_YELLOW, COLOR_RESET
+            "  {}● ELEVATED PRIVILEGES ACTIVE{}    {}⚡ Pure Rust Engine{}\n\n",
+            COLOR_GREEN, COLOR_RESET, COLOR_GRAY, COLOR_RESET
         ));
     } else {
         out.push_str(&format!(
-            "  {}✓ Running with elevated privileges{}\n",
-            COLOR_GREEN, COLOR_RESET
+            "  {}⚠ NON-ELEVATED: Please run with sudo / admin for cleanup!{}\n\n",
+            COLOR_YELLOW, COLOR_RESET
         ));
     }
-    out.push('\n');
 
-    // 1. Physical Memory Group
+    // 1. Physical Memory Box
     let p_color = get_level_color(info.percent_physical);
-    out.push_str(&format!("  {}Physical memory{}\n", COLOR_BOLD, COLOR_RESET));
     out.push_str(&format!(
-        "    Usage:                                  {}{:>3}%{}  {}\n",
+        "  {}┌─ Physical Memory ────────────────────────────────────────┐{}\n",
+        COLOR_CYAN, COLOR_RESET
+    ));
+    out.push_str(&format!(
+        "  {}│{}  Usage:      {}{:>3}%{}  {}   │\n",
+        COLOR_CYAN,
+        COLOR_RESET,
         p_color,
         info.percent_physical,
         COLOR_RESET,
-        render_bar(info.percent_physical, 16)
+        render_bar(info.percent_physical, 20)
     ));
     out.push_str(&format!(
-        "    Available:                              {:>10}\n",
-        format_bytes(info.avail_physical)
+        "  {}│{}  Available:  {:<10} (Used: {})               │\n",
+        COLOR_CYAN,
+        COLOR_RESET,
+        format_bytes(info.avail_physical),
+        format_bytes(info.used_physical)
     ));
     out.push_str(&format!(
-        "    Total available:                        {:>10}\n\n",
+        "  {}│{}  Total:      {:<10}                                │\n",
+        COLOR_CYAN,
+        COLOR_RESET,
         format_bytes(info.total_physical)
     ));
+    out.push_str(&format!(
+        "  {}└──────────────────────────────────────────────────────────┘{}\n\n",
+        COLOR_CYAN, COLOR_RESET
+    ));
 
-    // 2. Pagefile Group
-    out.push_str(&format!("  {}Pagefile{}\n", COLOR_BOLD, COLOR_RESET));
+    // 2. Pagefile Box
+    out.push_str(&format!(
+        "  {}┌─ Pagefile / Swap ─────────────────────────────────────────┐{}\n",
+        COLOR_BLUE, COLOR_RESET
+    ));
     if info.total_pagefile > 0 {
         let pf_color = get_level_color(info.percent_pagefile);
         out.push_str(&format!(
-            "    Usage:                                  {}{:>3}%{}  {}\n",
+            "  {}│{}  Usage:      {}{:>3}%{}  {}   │\n",
+            COLOR_BLUE,
+            COLOR_RESET,
             pf_color,
             info.percent_pagefile,
             COLOR_RESET,
-            render_bar(info.percent_pagefile, 16)
+            render_bar(info.percent_pagefile, 20)
         ));
         out.push_str(&format!(
-            "    Available:                              {:>10}\n",
-            format_bytes(info.avail_pagefile)
+            "  {}│{}  Available:  {:<10} (Used: {})               │\n",
+            COLOR_BLUE,
+            COLOR_RESET,
+            format_bytes(info.avail_pagefile),
+            format_bytes(info.used_pagefile)
         ));
         out.push_str(&format!(
-            "    Total available:                        {:>10}\n\n",
+            "  {}│{}  Total:      {:<10}                                │\n",
+            COLOR_BLUE,
+            COLOR_RESET,
             format_bytes(info.total_pagefile)
         ));
     } else {
-        out.push_str("    Usage:                                         N/A\n");
-        out.push_str("    Available:                                     N/A\n");
-        out.push_str("    Total available:                               N/A\n\n");
+        out.push_str(&format!(
+            "  {}│{}  No Pagefile / Swap active                             │\n",
+            COLOR_BLUE, COLOR_RESET
+        ));
     }
-
-    // 3. System working set Group
-    out.push_str(&format!("  {}System working set{}\n", COLOR_BOLD, COLOR_RESET));
-    if let Some(cached) = info.cached {
-        let pct = if info.total_physical > 0 {
-            ((cached as f64 / info.total_physical as f64) * 100.0).round().min(100.0) as u8
-        } else {
-            0
-        };
-        let c_color = get_level_color(pct);
-        out.push_str(&format!(
-            "    Usage:                                  {}{:>3}%{}  {}\n",
-            c_color,
-            pct,
-            COLOR_RESET,
-            render_bar(pct, 16)
-        ));
-        out.push_str(&format!(
-            "    Available:                              {:>10}\n",
-            format_bytes(cached)
-        ));
-        out.push_str(&format!(
-            "    Total available:                        {:>10}\n",
-            format_bytes(info.total_physical)
-        ));
-    } else {
-        out.push_str("    Usage:                                         N/A\n");
-        out.push_str("    Available:                                     N/A\n");
-        out.push_str("    Total available:                               N/A\n");
-    }
-
-    out.push_str(&format!("  {}\n", "─".repeat(58)));
-
-    // Clean memory button box
     out.push_str(&format!(
-        "                 {}┌──────────────────────────────────┐{}\n",
-        COLOR_BOLD, COLOR_RESET
+        "  {}└──────────────────────────────────────────────────────────┘{}\n\n",
+        COLOR_BLUE, COLOR_RESET
     ));
+
+    // 3. System Cache Summary
+    let cached_str = info.cached.map(format_bytes).unwrap_or_else(|| "N/A".into());
+    let buffers_str = info.buffers.map(format_bytes).unwrap_or_else(|| "N/A".into());
     out.push_str(&format!(
-        "                 {}│        [ Clean memory ]          │{} (Press SPACE / C)\n",
+        "  {}System Working Set / Cache:{} {}  |  {}Buffers:{} {}\n\n",
+        COLOR_BOLD, COLOR_RESET, cached_str, COLOR_BOLD, COLOR_RESET, buffers_str
+    ));
+
+    // Big Action Button
+    out.push_str(&format!(
+        "              {}╔════════════════════════════════════════╗{}\n",
         COLOR_GREEN, COLOR_RESET
     ));
     out.push_str(&format!(
-        "                 {}└──────────────────────────────────┘{}\n\n",
-        COLOR_BOLD, COLOR_RESET
+        "              {}║         ⚡  [ CLEAN MEMORY ]  ⚡         ║{}  [SPACE / C]\n",
+        COLOR_WHITE_BOLD, COLOR_RESET
+    ));
+    out.push_str(&format!(
+        "              {}╚════════════════════════════════════════╝{}\n\n",
+        COLOR_GREEN, COLOR_RESET
     ));
 
-    // Status message or last clean report
+    // Status line
     if let Some((msg, col)) = status_msg {
-        out.push_str(&format!("  Status: {}{}{}\n", col, msg, COLOR_RESET));
+        out.push_str(&format!("  {}Status:{} {}{}{}\n", COLOR_BOLD, COLOR_RESET, col, msg, COLOR_RESET));
     } else if let Some(rep) = last_report {
         out.push_str(&format!(
-            "  Status: {}Memory was released with {} result. ({}% -> {}% in {:.1?}){}\n",
+            "  {}Status:{} {}Cleaned {} in {:.1?} ({}% -> {}){}\n",
+            COLOR_BOLD,
+            COLOR_RESET,
             COLOR_GREEN,
             format_bytes(rep.bytes_freed),
+            rep.duration,
             rep.mem_before.percent_physical,
             rep.mem_after.percent_physical,
-            rep.duration,
             COLOR_RESET
         ));
     } else {
-        out.push_str("  Status: Ready\n");
+        out.push_str(&format!("  {}Status:{} Ready\n", COLOR_BOLD, COLOR_RESET));
     }
-    out.push_str(&format!("  {}\n", "─".repeat(58)));
+    out.push_str(&format!("  {}\n", "─".repeat(60)));
 
-    // Memory Regions Checklist
+    // Memory Regions matrix
     let check = |bit: u32, num: &str, label: &str| {
         if (mask & bit) != 0 {
             format!("{}[✓] {}.{}{}", COLOR_GREEN, num, label, COLOR_RESET)
@@ -436,25 +538,112 @@ fn render_dashboard(
         check(REDUCT_MODIFIEDFILECACHE, "8", "Volume")
     ));
 
-    // Auto-clean settings line
-    let auto_status = if auto_enabled {
-        format!("{}[ON: >= {}%]{}", COLOR_GREEN, auto_limit, COLOR_RESET)
+    // Settings Pill
+    let auto_pill = if config.autoreduct_enable {
+        format!("{}[ON: >= {}%]{}", COLOR_GREEN, config.autoreduct_limit, COLOR_RESET)
     } else {
         format!("{}[OFF]{}", COLOR_GRAY, COLOR_RESET)
     };
-    let int_status = if interval_enabled {
-        format!("{}[ON: {}m]{}", COLOR_GREEN, interval_mins, COLOR_RESET)
+    let int_pill = if config.autoreduct_interval_enable {
+        format!("{}[ON: {}m]{}", COLOR_GREEN, config.autoreduct_interval_minutes, COLOR_RESET)
     } else {
         format!("{}[OFF]{}", COLOR_GRAY, COLOR_RESET)
     };
     out.push_str(&format!(
-        "  Auto-clean: {} [A/T]  |  Interval: {} [I]\n",
-        auto_status, int_status
+        "  Config: Auto: {} | Interval: {} | Theme: {}\n\n",
+        auto_pill, int_pill, if config.dark_theme { "DARK" } else { "LIGHT" }
     ));
 
-    // Shortcuts footer
+    // Navigation Footer
     out.push_str(&format!(
-        "  {}[SPACE/C] Clean   [F] Full Clean   [1-8] Toggle Areas   [Q] Exit{}\n",
+        "  {}[SPACE] Clean  [F] Full Clean  [S] Settings  [1-8] Areas  [Q] Exit{}\n",
+        COLOR_BOLD, COLOR_RESET
+    ));
+
+    print!("{}", out);
+    io::stdout().flush().ok();
+}
+
+fn render_settings_view(
+    config: &Config,
+    mask: u32,
+    cursor: usize,
+    status_msg: Option<&(String, &'static str)>,
+) {
+    let mut out = String::with_capacity(4096);
+    out.push_str("\x1B[H");
+
+    out.push_str(&format!(
+        "{}{}╭──────────────────────────────────────────────────────────────╮{}\n",
+        COLOR_BOLD, COLOR_MAGENTA, COLOR_RESET
+    ));
+    out.push_str(&format!(
+        "{}{}│                 ⚙  MEM REDUCT - SETTINGS  ⚙                   │{}\n",
+        COLOR_WHITE_BOLD, COLOR_MAGENTA, COLOR_RESET
+    ));
+    out.push_str(&format!(
+        "{}{}╰──────────────────────────────────────────────────────────────╯{}\n\n",
+        COLOR_BOLD, COLOR_MAGENTA, COLOR_RESET
+    ));
+
+    let items = [
+        format!(
+            "1. Auto-Clean on Threshold:        {}",
+            if config.autoreduct_enable {
+                format!("{}[ ENABLED ]{}", COLOR_GREEN, COLOR_RESET)
+            } else {
+                format!("{}[ DISABLED ]{}", COLOR_GRAY, COLOR_RESET)
+            }
+        ),
+        format!(
+            "2. Threshold Percentage:           ◄ {:>2}% ►",
+            config.autoreduct_limit
+        ),
+        format!(
+            "3. Auto-Clean Periodic Interval:   {}",
+            if config.autoreduct_interval_enable {
+                format!("{}[ ENABLED ]{}", COLOR_GREEN, COLOR_RESET)
+            } else {
+                format!("{}[ DISABLED ]{}", COLOR_GRAY, COLOR_RESET)
+            }
+        ),
+        format!(
+            "4. Interval Duration:              ◄ {:>3} min ►",
+            config.autoreduct_interval_minutes
+        ),
+        format!(
+            "5. Cleanup Cooldown:               ◄ {:>2} sec ►",
+            config.cooldown_seconds
+        ),
+        format!(
+            "6. Dark Theme:                     {}",
+            if config.dark_theme {
+                format!("{}[ DARK ]{}", COLOR_CYAN, COLOR_RESET)
+            } else {
+                format!("{}[ LIGHT ]{}", COLOR_YELLOW, COLOR_RESET)
+            }
+        ),
+        "7. Reset All Settings to Default".to_string(),
+        "8. [ SAVE & APPLY CONFIGURATION ]".to_string(),
+    ];
+
+    for (i, item) in items.iter().enumerate() {
+        if i == cursor {
+            out.push_str(&format!("  {}➤  {}{}\n", COLOR_WHITE_BOLD, item, COLOR_RESET));
+        } else {
+            out.push_str(&format!("     {}{}\n", item, COLOR_RESET));
+        }
+    }
+
+    out.push_str(&format!("\n  {}\n", "─".repeat(60)));
+    out.push_str(&format!("  Active Clean Mask: 0x{:02X}\n\n", mask));
+
+    if let Some((msg, col)) = status_msg {
+        out.push_str(&format!("  {}{}{}\n\n", col, msg, COLOR_RESET));
+    }
+
+    out.push_str(&format!(
+        "  {}[▲/▼] Navigate  [◄/► or ENTER] Change  [ESC / S] Back to Dashboard{}\n",
         COLOR_BOLD, COLOR_RESET
     ));
 
