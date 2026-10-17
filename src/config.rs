@@ -12,6 +12,7 @@ pub struct Config {
     pub cooldown_seconds: u64,
     pub dark_theme: bool,
     pub always_on_top: bool,
+    pub tray_minimized: bool,
     pub warning_level: u8,
     pub danger_level: u8,
 }
@@ -27,6 +28,7 @@ impl Default for Config {
             cooldown_seconds: 30,
             dark_theme: true,
             always_on_top: false,
+            tray_minimized: false,
             warning_level: 70,
             danger_level: 90,
         }
@@ -55,7 +57,8 @@ impl Config {
             "# Mem Reduct Configuration File\n\n\
             [general]\n\
             dark_theme = {}\n\
-            always_on_top = {}\n\n\
+            always_on_top = {}\n\
+            tray_minimized = {}\n\n\
             [auto_clean]\n\
             autoreduct_enable = {}\n\
             autoreduct_limit = {}\n\
@@ -68,6 +71,7 @@ impl Config {
             danger_level = {}\n",
             self.dark_theme,
             self.always_on_top,
+            self.tray_minimized,
             self.autoreduct_enable,
             self.autoreduct_limit,
             self.autoreduct_interval_enable,
@@ -98,6 +102,9 @@ impl Config {
             let val = parts[1].trim().trim_matches('"');
 
             match key.as_str() {
+                "trayminimized" | "tray_minimized" | "close_to_tray" => {
+                    self.tray_minimized = val.eq_ignore_ascii_case("true") || val == "1";
+                }
                 "autoreductenable" | "auto_reduct_enable" | "auto_clean" => {
                     self.autoreduct_enable = val.eq_ignore_ascii_case("true") || val == "1";
                 }

@@ -1,5 +1,7 @@
+#![allow(dead_code, static_mut_refs)]
+
 use crate::cleaner::{
-    clean_memory, REDUCT_COMBINEMEMORYLISTS, REDUCT_MASK_ALL, REDUCT_MASK_DEFAULT,
+    clean_memory, REDUCT_COMBINEMEMORYLISTS, REDUCT_MASK_DEFAULT,
     REDUCT_MODIFIEDFILECACHE, REDUCT_MODIFIEDLIST, REDUCT_REGISTRYCACHE, REDUCT_STANDBYLIST,
     REDUCT_STANDBYPRIORITY0LIST, REDUCT_SYSTEMFILECACHE, REDUCT_WORKINGSET,
 };
@@ -7,6 +9,7 @@ use crate::config::Config;
 use crate::system::{format_bytes, get_memory_info};
 use std::mem::size_of;
 use std::ptr;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 type HWND = *mut std::ffi::c_void;
@@ -29,13 +32,18 @@ const WS_MINIMIZEBOX: u32 = 0x00020000;
 const WS_VISIBLE: u32 = 0x10000000;
 const SW_SHOW: i32 = 5;
 const SW_HIDE: i32 = 0;
+const SW_MINIMIZE: i32 = 6;
 const CW_USEDEFAULT: i32 = 0x80000000u32 as i32;
 
 const WM_CREATE: u32 = 0x0001;
 const WM_DESTROY: u32 = 0x0002;
 const WM_PAINT: u32 = 0x000F;
+const WM_CLOSE: u32 = 0x0010;
 const WM_ERASEBKGND: u32 = 0x0014;
 const WM_NCCREATE: u32 = 0x0081;
+const WM_NCLBUTTONDOWN: u32 = 0x00A1;
+const WM_COMMAND: u32 = 0x0111;
+const WM_SYSCOMMAND: u32 = 0x0112;
 const WM_TIMER: u32 = 0x0113;
 const WM_MOUSEMOVE: u32 = 0x0200;
 const WM_LBUTTONDOWN: u32 = 0x0201;
@@ -43,8 +51,12 @@ const WM_LBUTTONUP: u32 = 0x0202;
 const WM_MOUSELEAVE: u32 = 0x02A3;
 const WM_USER: u32 = 0x0400;
 const WM_TRAYICON: u32 = WM_USER + 1;
+const WM_CLEAN_FINISHED: u32 = WM_USER + 2;
 const WM_LBUTTONDBLCLK: u32 = 0x0203;
 const WM_RBUTTONUP: u32 = 0x0205;
+
+const SC_MINIMIZE: usize = 0xF020;
+const HTCAPTION: isize = 2;
 
 const MF_STRING: u32 = 0x00000000;
 const MF_SEPARATOR: u32 = 0x00000800;
@@ -79,6 +91,7 @@ const IDM_TRAY_CLEAN: usize = 102;
 const IDM_TRAY_EXIT: usize = 103;
 
 #[repr(C)]
+#[allow(non_snake_case)]
 struct WNDCLASSEXW {
     cbSize: u32,
     style: u32,
@@ -95,6 +108,7 @@ struct WNDCLASSEXW {
 }
 
 #[repr(C)]
+#[allow(non_snake_case)]
 struct MSG {
     hwnd: HWND,
     message: u32,
@@ -119,6 +133,7 @@ struct RECT {
 }
 
 #[repr(C)]
+#[allow(non_snake_case)]
 struct PAINTSTRUCT {
     hdc: HDC,
     fErase: i32,
@@ -129,6 +144,7 @@ struct PAINTSTRUCT {
 }
 
 #[repr(C)]
+#[allow(non_snake_case)]
 struct TRACKMOUSEEVENT {
     cbSize: u32,
     dwFlags: u32,
@@ -137,6 +153,7 @@ struct TRACKMOUSEEVENT {
 }
 
 #[repr(C)]
+#[allow(non_snake_case)]
 struct NOTIFYICONDATAW {
     cbSize: u32,
     hWnd: HWND,
@@ -184,6 +201,10 @@ extern "system" {
     fn GetMessageW(lpMsg: *mut MSG, hWnd: HWND, wMsgFilterMin: u32, wMsgFilterMax: u32) -> i32;
     fn TranslateMessage(lpMsg: *const MSG) -> i32;
     fn DispatchMessageW(lpMsg: *const MSG) -> LRESULT;
+    fn PostMessageW(hWnd: HWND, Msg: u32, wParam: WPARAM, lParam: LPARAM) -> i32;
+    fn SendMessageW(hWnd: HWND, Msg: u32, wParam: WPARAM, lParam: LPARAM) -> LRESULT;
+    fn ReleaseCapture() -> i32;
+    fn DestroyWindow(hWnd: HWND) -> i32;
     fn PostQuitMessage(nExitCode: i32);
     fn SetTimer(
         hWnd: HWND,
@@ -279,6 +300,7 @@ static mut CURRENT_MASK: u32 = REDUCT_MASK_DEFAULT;
 static mut LAST_CLEAN_TIME: Option<Instant> = None;
 static mut LAST_CLEAN_STATUS: Option<String> = None;
 static mut IS_MOUSE_TRACKED: bool = false;
+static IS_CLEANING: AtomicBool = AtomicBool::new(false);
 
 // Fonts
 static mut FONT_HERO: HFONT = ptr::null_mut();
@@ -292,6 +314,8 @@ static mut FONT_SMALL: HFONT = ptr::null_mut();
 enum ClickTarget {
     TabOverview,
     TabSettings,
+    BtnMinimize,
+    BtnClose,
     CleanButton,
     Chip(u32),
     SettingAutoToggle,
@@ -406,9 +430,11 @@ unsafe fn render_modern_gui(hdc: HDC, w: i32, h: i32, config: &Config) {
     draw_rect_solid(hdc, 0, 0, w, h, rgb(15, 17, 23));
 
     // 2. Header Bar
-    draw_string(hdc, "⚡ Mem Reduct", FONT_TITLE, rgb(255, 255, 255), 18, 14, 150, 24, DT_LEFT | DT_VCENTER);
-    draw_rounded_card(hdc, 145, 16, 52, 18, 8, rgb(30, 33, 44), rgb(45, 50, 68));
-    draw_string(hdc, "v3.5.3", FONT_SMALL, rgb(148, 163, 184), 145, 16, 52, 18, DT_CENTER | DT_VCENTER);
+    // Logo and App Name
+    draw_string(hdc, "⚡ Mem Reduct", FONT_TITLE, rgb(255, 255, 255), 14, 12, 105, 24, DT_LEFT | DT_VCENTER);
+    // Version Badge
+    draw_rounded_card(hdc, 122, 15, 42, 18, 8, rgb(30, 33, 44), rgb(45, 50, 68));
+    draw_string(hdc, "v3.5.3", FONT_SMALL, rgb(148, 163, 184), 122, 15, 42, 18, DT_CENTER | DT_VCENTER);
 
     // Navigation Tabs: [ Monitor ]  [ Settings ]
     let tab_ov_bg = if ACTIVE_TAB == ActiveTab::Overview {
@@ -419,8 +445,8 @@ unsafe fn render_modern_gui(hdc: HDC, w: i32, h: i32, config: &Config) {
         rgb(24, 27, 36)
     };
     let tab_ov_text = if ACTIVE_TAB == ActiveTab::Overview { rgb(255, 255, 255) } else { rgb(160, 170, 190) };
-    draw_rounded_card(hdc, 215, 14, 65, 24, 12, tab_ov_bg, rgb(45, 50, 68));
-    draw_string(hdc, "Monitor", FONT_SUBTITLE, tab_ov_text, 215, 14, 65, 24, DT_CENTER | DT_VCENTER);
+    draw_rounded_card(hdc, 170, 12, 62, 24, 12, tab_ov_bg, rgb(45, 50, 68));
+    draw_string(hdc, "Monitor", FONT_SUBTITLE, tab_ov_text, 170, 12, 62, 24, DT_CENTER | DT_VCENTER);
 
     let tab_st_bg = if ACTIVE_TAB == ActiveTab::Settings {
         rgb(99, 102, 241)
@@ -430,11 +456,26 @@ unsafe fn render_modern_gui(hdc: HDC, w: i32, h: i32, config: &Config) {
         rgb(24, 27, 36)
     };
     let tab_st_text = if ACTIVE_TAB == ActiveTab::Settings { rgb(255, 255, 255) } else { rgb(160, 170, 190) };
-    draw_rounded_card(hdc, 286, 14, 65, 24, 12, tab_st_bg, rgb(45, 50, 68));
-    draw_string(hdc, "Settings", FONT_SUBTITLE, tab_st_text, 286, 14, 65, 24, DT_CENTER | DT_VCENTER);
+    draw_rounded_card(hdc, 238, 12, 64, 24, 12, tab_st_bg, rgb(45, 50, 68));
+    draw_string(hdc, "Settings", FONT_SUBTITLE, tab_st_text, 238, 12, 64, 24, DT_CENTER | DT_VCENTER);
+
+    // Window Control Buttons: [ ─ ]  [ ✕ ]
+    let is_min_hover = HOVER_TARGET == Some(ClickTarget::BtnMinimize);
+    let min_bg = if is_min_hover { rgb(38, 42, 56) } else { rgb(24, 27, 36) };
+    let min_border = if is_min_hover { rgb(99, 102, 241) } else { rgb(45, 50, 68) };
+    let min_text = if is_min_hover { rgb(255, 255, 255) } else { rgb(160, 170, 190) };
+    draw_rounded_card(hdc, w - 64, 12, 26, 24, 8, min_bg, min_border);
+    draw_string(hdc, "─", FONT_SUBTITLE, min_text, w - 64, 11, 26, 24, DT_CENTER | DT_VCENTER);
+
+    let is_cls_hover = HOVER_TARGET == Some(ClickTarget::BtnClose);
+    let cls_bg = if is_cls_hover { rgb(220, 38, 38) } else { rgb(24, 27, 36) };
+    let cls_border = if is_cls_hover { rgb(239, 68, 68) } else { rgb(45, 50, 68) };
+    let cls_text = if is_cls_hover { rgb(255, 255, 255) } else { rgb(160, 170, 190) };
+    draw_rounded_card(hdc, w - 34, 12, 26, 24, 8, cls_bg, cls_border);
+    draw_string(hdc, "✕", FONT_SUBTITLE, cls_text, w - 34, 12, 26, 24, DT_CENTER | DT_VCENTER);
 
     // Divider
-    draw_rect_solid(hdc, 16, 46, w - 32, 1, rgb(30, 34, 46));
+    draw_rect_solid(hdc, 14, 46, w - 28, 1, rgb(30, 34, 46));
 
     match ACTIVE_TAB {
         ActiveTab::Overview => {
@@ -613,16 +654,24 @@ unsafe fn render_tab_overview(hdc: HDC, w: i32, _h: i32) {
     // 4. Main Action Button: ⚡ CLEAN MEMORY NOW
     let btn_y = 398;
     let btn_h = 44;
-    let btn_bg = if HOVER_TARGET == Some(ClickTarget::CleanButton) {
+    let is_cleaning = IS_CLEANING.load(Ordering::SeqCst);
+    let btn_bg = if is_cleaning {
+        rgb(79, 70, 229)
+    } else if HOVER_TARGET == Some(ClickTarget::CleanButton) {
         rgb(129, 140, 248)
     } else {
         rgb(99, 102, 241)
     };
 
     draw_rounded_card(hdc, card_x, btn_y, card_w, btn_h, 12, btn_bg, btn_bg);
+    let btn_label = if is_cleaning {
+        "⚡  OPTIMIZING MEMORY..."
+    } else {
+        "⚡  CLEAN MEMORY NOW"
+    };
     draw_string(
         hdc,
-        "⚡  CLEAN MEMORY NOW",
+        btn_label,
         FONT_BTN,
         rgb(255, 255, 255),
         card_x,
@@ -717,11 +766,17 @@ unsafe fn render_tab_settings(hdc: HDC, w: i32, _h: i32, config: &Config) {
 }
 
 fn hit_test(x: i32, y: i32, w: i32) -> Option<ClickTarget> {
-    if y >= 14 && y <= 38 {
-        if x >= 215 && x <= 280 {
+    if y >= 10 && y <= 38 {
+        if x >= w - 34 && x <= w - 8 {
+            return Some(ClickTarget::BtnClose);
+        }
+        if x >= w - 64 && x <= w - 38 {
+            return Some(ClickTarget::BtnMinimize);
+        }
+        if x >= 170 && x <= 232 {
             return Some(ClickTarget::TabOverview);
         }
-        if x >= 286 && x <= 351 {
+        if x >= 238 && x <= 302 {
             return Some(ClickTarget::TabSettings);
         }
     }
@@ -911,6 +966,17 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
             let mut config = Config::load();
             if let Some(target) = hit_test(x, y, w) {
                 match target {
+                    ClickTarget::BtnMinimize => {
+                        let config = Config::load();
+                        if config.tray_minimized {
+                            ShowWindow(hwnd, SW_HIDE);
+                        } else {
+                            ShowWindow(hwnd, SW_MINIMIZE);
+                        }
+                    }
+                    ClickTarget::BtnClose => {
+                        SendMessageW(hwnd, WM_CLOSE, 0, 0);
+                    }
                     ClickTarget::TabOverview => {
                         ACTIVE_TAB = ActiveTab::Overview;
                         InvalidateRect(hwnd, ptr::null(), 0);
@@ -968,12 +1034,39 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
                         InvalidateRect(hwnd, ptr::null(), 0);
                     }
                 }
+            } else if y <= 48 {
+                // Header bar dragging
+                ReleaseCapture();
+                SendMessageW(hwnd, WM_NCLBUTTONDOWN, HTCAPTION as WPARAM, 0);
             }
+            0
+        }
+        WM_CLEAN_FINISHED => {
+            IS_CLEANING.store(false, Ordering::SeqCst);
+            if lparam != 0 {
+                let boxed = unsafe { Box::from_raw(lparam as *mut Result<crate::cleaner::CleanReport, String>) };
+                match *boxed {
+                    Ok(rep) => {
+                        LAST_CLEAN_TIME = Some(Instant::now());
+                        let freed = format_bytes(rep.bytes_freed);
+                        LAST_CLEAN_STATUS = Some(format!(
+                            "✓ Memory released: {} ({}% -> {}) in {:.1?}",
+                            freed, rep.mem_before.percent_physical, rep.mem_after.percent_physical, rep.duration
+                        ));
+                    }
+                    Err(e) => {
+                        LAST_CLEAN_STATUS = Some(format!("Error: {}", e));
+                    }
+                }
+            }
+            InvalidateRect(hwnd, ptr::null(), 0);
             0
         }
         WM_TIMER => {
             let config = Config::load();
-            if config.autoreduct_enable {
+            let is_cleaning = IS_CLEANING.load(Ordering::SeqCst);
+
+            if config.autoreduct_enable && !is_cleaning {
                 if let Ok(info) = get_memory_info() {
                     if info.percent_physical >= config.autoreduct_limit {
                         let can_clean = match LAST_CLEAN_TIME {
@@ -984,6 +1077,17 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
                             do_clean(hwnd);
                         }
                     }
+                }
+            }
+
+            if config.autoreduct_interval_enable && config.autoreduct_interval_minutes > 0 && !is_cleaning {
+                let interval = Duration::from_secs(config.autoreduct_interval_minutes * 60);
+                let can_clean = match LAST_CLEAN_TIME {
+                    Some(t) => t.elapsed() >= interval,
+                    None => true,
+                };
+                if can_clean {
+                    do_clean(hwnd);
                 }
             }
 
@@ -1045,6 +1149,26 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
             }
             0
         }
+        WM_SYSCOMMAND => {
+            let cmd = wparam & 0xFFF0;
+            if cmd == SC_MINIMIZE {
+                let config = Config::load();
+                if config.tray_minimized {
+                    ShowWindow(hwnd, SW_HIDE);
+                    return 0;
+                }
+            }
+            DefWindowProcW(hwnd, msg, wparam, lparam)
+        }
+        WM_CLOSE => {
+            let config = Config::load();
+            if config.tray_minimized {
+                ShowWindow(hwnd, SW_HIDE);
+            } else {
+                DestroyWindow(hwnd);
+            }
+            0
+        }
         WM_DESTROY => {
             KillTimer(hwnd, 1);
             let mut nid: NOTIFYICONDATAW = std::mem::zeroed();
@@ -1060,23 +1184,29 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
 }
 
 unsafe fn do_clean(hwnd: HWND) {
-    LAST_CLEAN_STATUS = Some("⚡ Cleaning memory...".to_string());
+    if IS_CLEANING
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .is_err()
+    {
+        return;
+    }
+
+    LAST_CLEAN_STATUS = Some("⚡ Cleaning memory in background...".to_string());
     InvalidateRect(hwnd, ptr::null(), 0);
 
-    match clean_memory(CURRENT_MASK) {
-        Ok(rep) => {
-            LAST_CLEAN_TIME = Some(Instant::now());
-            let freed = format_bytes(rep.bytes_freed);
-            LAST_CLEAN_STATUS = Some(format!(
-                "✓ Memory released: {} ({}% -> {}) in {:.1?}",
-                freed, rep.mem_before.percent_physical, rep.mem_after.percent_physical, rep.duration
-            ));
+    let hwnd_raw = hwnd as usize;
+    let mask = CURRENT_MASK;
+    std::thread::spawn(move || {
+        let rep = clean_memory(mask);
+        let boxed = Box::new(rep);
+        let lparam = Box::into_raw(boxed) as LPARAM;
+        unsafe {
+            let res = PostMessageW(hwnd_raw as HWND, WM_CLEAN_FINISHED, 0, lparam);
+            if res == 0 {
+                drop(Box::from_raw(lparam as *mut Result<crate::cleaner::CleanReport, String>));
+            }
         }
-        Err(e) => {
-            LAST_CLEAN_STATUS = Some(format!("Error: {}", e));
-        }
-    }
-    InvalidateRect(hwnd, ptr::null(), 0);
+    });
 }
 
 pub fn run_gui() -> Result<(), String> {
@@ -1118,8 +1248,8 @@ pub fn run_gui() -> Result<(), String> {
             WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX | WS_VISIBLE,
             CW_USEDEFAULT,
             CW_USEDEFAULT,
-            380,
-            535,
+            410,
+            545,
             ptr::null_mut(),
             ptr::null_mut(),
             hinst,
