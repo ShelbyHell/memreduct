@@ -1,3 +1,5 @@
+#![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
+
 mod cleaner;
 mod config;
 mod gui;
@@ -386,6 +388,17 @@ fn main() {
     let r = running.clone();
     // Handle Ctrl+C gracefully
     let _ = ctrlc_setup(r);
+
+    #[cfg(target_os = "windows")]
+    if !matches!(mode, RunMode::Gui) {
+        #[link(name = "kernel32")]
+        extern "system" {
+            fn AttachConsole(dwProcessId: u32) -> i32;
+        }
+        unsafe {
+            AttachConsole(0xFFFFFFFF);
+        }
+    }
 
     match mode {
         RunMode::Gui => {
