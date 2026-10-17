@@ -29,10 +29,13 @@ const WS_MINIMIZEBOX: u32 = 0x00020000;
 const WS_VISIBLE: u32 = 0x10000000;
 const SW_SHOW: i32 = 5;
 const SW_HIDE: i32 = 0;
+const CW_USEDEFAULT: i32 = 0x80000000u32 as i32;
 
 const WM_CREATE: u32 = 0x0001;
 const WM_DESTROY: u32 = 0x0002;
 const WM_PAINT: u32 = 0x000F;
+const WM_ERASEBKGND: u32 = 0x0014;
+const WM_NCCREATE: u32 = 0x0081;
 const WM_TIMER: u32 = 0x0113;
 const WM_MOUSEMOVE: u32 = 0x0200;
 const WM_LBUTTONDOWN: u32 = 0x0201;
@@ -51,7 +54,6 @@ const IDC_ARROW: *const u16 = 32512 as *const u16;
 const TRANSPARENT: i32 = 1;
 const SRCCOPY: u32 = 0x00CC0020;
 const PS_SOLID: i32 = 0;
-const PS_NULL: i32 = 5;
 
 const DT_LEFT: u32 = 0x00000000;
 const DT_CENTER: u32 = 0x00000001;
@@ -151,6 +153,12 @@ struct NOTIFYICONDATAW {
     dwInfoFlags: u32,
 }
 
+#[link(name = "kernel32")]
+extern "system" {
+    fn GetLastError() -> u32;
+    fn GetModuleHandleW(lpModuleName: *const u16) -> HINSTANCE;
+}
+
 #[link(name = "user32")]
 extern "system" {
     fn RegisterClassExW(lpWndClass: *const WNDCLASSEXW) -> u16;
@@ -185,7 +193,6 @@ extern "system" {
     ) -> usize;
     fn KillTimer(hWnd: HWND, uIDEvent: usize) -> i32;
     fn LoadCursorW(hInstance: HINSTANCE, lpCursorName: *const u16) -> HCURSOR;
-    fn GetModuleHandleW(lpModuleName: *const u16) -> HINSTANCE;
     fn BeginPaint(hWnd: HWND, lpPaint: *mut PAINTSTRUCT) -> HDC;
     fn EndPaint(hWnd: HWND, lpPaint: *const PAINTSTRUCT) -> i32;
     fn InvalidateRect(hWnd: HWND, lpRect: *const RECT, bErase: i32) -> i32;
@@ -361,10 +368,7 @@ unsafe fn draw_pill_gauge(
     fill_color: u32,
     bg_color: u32,
 ) {
-    // Background pill
     draw_rounded_card(hdc, x, y, w, h, h, bg_color, bg_color);
-
-    // Filled bar
     let filled_w = ((w as f64 * (percent as f64 / 100.0)).round() as i32).max(h).min(w);
     if percent > 0 {
         draw_rounded_card(hdc, x, y, filled_w, h, h, fill_color, fill_color);
@@ -398,19 +402,17 @@ unsafe fn draw_string(
 }
 
 unsafe fn render_modern_gui(hdc: HDC, w: i32, h: i32, config: &Config) {
-    // 1. Window Background (#0F1117 - Deep Midnight Dark)
+    // 1. Window Background
     draw_rect_solid(hdc, 0, 0, w, h, rgb(15, 17, 23));
 
     // 2. Header Bar
-    // Logo & Title
     draw_string(hdc, "⚡ Mem Reduct", FONT_TITLE, rgb(255, 255, 255), 18, 14, 150, 24, DT_LEFT | DT_VCENTER);
-    // Version Pill
     draw_rounded_card(hdc, 145, 16, 52, 18, 8, rgb(30, 33, 44), rgb(45, 50, 68));
     draw_string(hdc, "v3.5.3", FONT_SMALL, rgb(148, 163, 184), 145, 16, 52, 18, DT_CENTER | DT_VCENTER);
 
-    // Top Navigation Tabs: [ Overview ]  [ Settings ]
+    // Navigation Tabs: [ Monitor ]  [ Settings ]
     let tab_ov_bg = if ACTIVE_TAB == ActiveTab::Overview {
-        rgb(99, 102, 241) // Accent Indigo
+        rgb(99, 102, 241)
     } else if HOVER_TARGET == Some(ClickTarget::TabOverview) {
         rgb(38, 42, 56)
     } else {
@@ -431,7 +433,7 @@ unsafe fn render_modern_gui(hdc: HDC, w: i32, h: i32, config: &Config) {
     draw_rounded_card(hdc, 286, 14, 65, 24, 12, tab_st_bg, rgb(45, 50, 68));
     draw_string(hdc, "Settings", FONT_SUBTITLE, tab_st_text, 286, 14, 65, 24, DT_CENTER | DT_VCENTER);
 
-    // Divider Line
+    // Divider
     draw_rect_solid(hdc, 16, 46, w - 32, 1, rgb(30, 34, 46));
 
     match ACTIVE_TAB {
@@ -447,26 +449,23 @@ unsafe fn render_modern_gui(hdc: HDC, w: i32, h: i32, config: &Config) {
 unsafe fn render_tab_overview(hdc: HDC, w: i32, _h: i32) {
     let info = get_memory_info().unwrap_or_default();
 
-    // 1. Hero Card: Physical RAM (#181B24)
+    // 1. Hero Card: Physical RAM
     let card_x = 16;
     let card_y = 56;
     let card_w = w - 32;
     let card_h = 110;
     draw_rounded_card(hdc, card_x, card_y, card_w, card_h, 14, rgb(24, 27, 36), rgb(38, 43, 58));
 
-    // Label
     draw_string(hdc, "PHYSICAL MEMORY", FONT_SMALL, rgb(148, 163, 184), card_x + 16, card_y + 12, 160, 16, DT_LEFT);
 
-    // Dynamic percent color
     let p_color = if info.percent_physical >= 90 {
-        rgb(239, 68, 68) // Danger Red
+        rgb(239, 68, 68)
     } else if info.percent_physical >= 70 {
-        rgb(245, 158, 11) // Warning Amber
+        rgb(245, 158, 11)
     } else {
-        rgb(16, 185, 129) // Healthy Emerald
+        rgb(16, 185, 129)
     };
 
-    // Huge percentage
     draw_string(
         hdc,
         &format!("{}%", info.percent_physical),
@@ -479,7 +478,6 @@ unsafe fn render_tab_overview(hdc: HDC, w: i32, _h: i32) {
         DT_LEFT | DT_VCENTER,
     );
 
-    // Stats line right
     let stats_text = format!(
         "Used: {}\nFree: {}\nTotal: {}",
         format_bytes(info.used_physical),
@@ -498,7 +496,6 @@ unsafe fn render_tab_overview(hdc: HDC, w: i32, _h: i32) {
         DT_RIGHT,
     );
 
-    // Pill progress bar
     draw_pill_gauge(
         hdc,
         card_x + 16,
@@ -550,7 +547,7 @@ unsafe fn render_tab_overview(hdc: HDC, w: i32, _h: i32) {
         hdc,
         &cached_str,
         FONT_TITLE,
-        rgb(168, 85, 247), // Modern Purple
+        rgb(168, 85, 247),
         card_x + sub_w + 22,
         sub_y + 24,
         sub_w - 24,
@@ -617,9 +614,9 @@ unsafe fn render_tab_overview(hdc: HDC, w: i32, _h: i32) {
     let btn_y = 398;
     let btn_h = 44;
     let btn_bg = if HOVER_TARGET == Some(ClickTarget::CleanButton) {
-        rgb(129, 140, 248) // Hover Bright Indigo
+        rgb(129, 140, 248)
     } else {
-        rgb(99, 102, 241) // Accent Indigo
+        rgb(99, 102, 241)
     };
 
     draw_rounded_card(hdc, card_x, btn_y, card_w, btn_h, 12, btn_bg, btn_bg);
@@ -656,13 +653,11 @@ unsafe fn render_tab_settings(hdc: HDC, w: i32, _h: i32, config: &Config) {
     draw_rounded_card(hdc, card_x, y, card_w, 88, 12, rgb(24, 27, 36), rgb(38, 43, 58));
     draw_string(hdc, "AUTO-REDUCT ON THRESHOLD", FONT_SMALL, rgb(148, 163, 184), card_x + 14, y + 10, 200, 16, DT_LEFT);
 
-    // Toggle button
     let tog_text = if config.autoreduct_enable { "ACTIVE" } else { "DISABLED" };
     let tog_bg = if config.autoreduct_enable { rgb(16, 185, 129) } else { rgb(45, 50, 68) };
     draw_rounded_card(hdc, card_x + card_w - 90, y + 10, 76, 20, 10, tog_bg, tog_bg);
     draw_string(hdc, tog_text, FONT_SMALL, rgb(255, 255, 255), card_x + card_w - 90, y + 10, 76, 20, DT_CENTER | DT_VCENTER);
 
-    // Percentage Pills (70%, 75%, 80%, 85%, 90%, 95%)
     let limits = [70u8, 75, 80, 85, 90, 95];
     let pill_w = 42;
     let pill_h = 24;
@@ -721,8 +716,7 @@ unsafe fn render_tab_settings(hdc: HDC, w: i32, _h: i32, config: &Config) {
     draw_string(hdc, "💾  SAVE & RETURN TO MONITOR", FONT_BTN, rgb(255, 255, 255), card_x, y, card_w, 44, DT_CENTER | DT_VCENTER);
 }
 
-fn hit_test(x: i32, y: i32, w: i32, config: &Config) -> Option<ClickTarget> {
-    // Header Tabs
+fn hit_test(x: i32, y: i32, w: i32) -> Option<ClickTarget> {
     if y >= 14 && y <= 38 {
         if x >= 215 && x <= 280 {
             return Some(ClickTarget::TabOverview);
@@ -738,12 +732,10 @@ fn hit_test(x: i32, y: i32, w: i32, config: &Config) -> Option<ClickTarget> {
                 let card_x = 16;
                 let card_w = w - 32;
 
-                // Clean Button: (card_x, 398, card_w, 44)
                 if x >= card_x && x <= card_x + card_w && y >= 398 && y <= 442 {
                     return Some(ClickTarget::CleanButton);
                 }
 
-                // Chips Grid: y >= 282 && y <= 390
                 let regions = [
                     (REDUCT_WORKINGSET, 0, 0),
                     (REDUCT_SYSTEMFILECACHE, 1, 0),
@@ -770,12 +762,10 @@ fn hit_test(x: i32, y: i32, w: i32, config: &Config) -> Option<ClickTarget> {
                 let card_x = 16;
                 let card_w = w - 32;
 
-                // Auto-clean toggle
                 if x >= card_x + card_w - 90 && x <= card_x + card_w - 14 && y >= 66 && y <= 86 {
                     return Some(ClickTarget::SettingAutoToggle);
                 }
 
-                // Limit Pills (70, 75, 80, 85, 90, 95)
                 let limits = [70u8, 75, 80, 85, 90, 95];
                 let pill_w = 42;
                 let pill_h = 24;
@@ -787,12 +777,10 @@ fn hit_test(x: i32, y: i32, w: i32, config: &Config) -> Option<ClickTarget> {
                     }
                 }
 
-                // Interval toggle
                 if x >= card_x + card_w - 90 && x <= card_x + card_w - 14 && y >= 164 && y <= 184 {
                     return Some(ClickTarget::SettingIntervalToggle);
                 }
 
-                // Interval Pills
                 let intervals = [15u64, 30, 45, 60, 120];
                 let ipill_w = 52;
                 for (i, &iv) in intervals.iter().enumerate() {
@@ -803,17 +791,14 @@ fn hit_test(x: i32, y: i32, w: i32, config: &Config) -> Option<ClickTarget> {
                     }
                 }
 
-                // Always on top toggle
                 if x >= card_x + card_w - 70 && x <= card_x + card_w - 14 && y >= 270 && y <= 294 {
                     return Some(ClickTarget::SettingAlwaysOnTop);
                 }
 
-                // Reset button
                 if x >= card_x && x <= card_x + card_w && y >= 326 && y <= 366 {
                     return Some(ClickTarget::SettingReset);
                 }
 
-                // Save button
                 if x >= card_x && x <= card_x + card_w && y >= 380 && y <= 424 {
                     return Some(ClickTarget::SettingSave);
                 }
@@ -823,10 +808,25 @@ fn hit_test(x: i32, y: i32, w: i32, config: &Config) -> Option<ClickTarget> {
     None
 }
 
+unsafe fn setup_tray_icon(hwnd: HWND) {
+    let mut nid: NOTIFYICONDATAW = std::mem::zeroed();
+    nid.cbSize = size_of::<NOTIFYICONDATAW>() as u32;
+    nid.hWnd = hwnd;
+    nid.uID = 1;
+    nid.uFlags = NIF_MESSAGE | NIF_TIP;
+    nid.uCallbackMessage = WM_TRAYICON;
+    let tip = to_wide("Mem Reduct (Rust)");
+    for (i, &c) in tip.iter().take(127).enumerate() {
+        nid.szTip[i] = c;
+    }
+    Shell_NotifyIconW(NIM_ADD, &mut nid);
+}
+
 unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     match msg {
+        WM_NCCREATE => 1,
+        WM_ERASEBKGND => 1,
         WM_CREATE => {
-            create_fonts();
             let config = Config::load();
             CURRENT_MASK = if config.reduct_mask != 0 {
                 config.reduct_mask
@@ -837,19 +837,6 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
             if config.always_on_top {
                 SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE);
             }
-
-            // System Tray Icon
-            let mut nid: NOTIFYICONDATAW = std::mem::zeroed();
-            nid.cbSize = size_of::<NOTIFYICONDATAW>() as u32;
-            nid.hWnd = hwnd;
-            nid.uID = 1;
-            nid.uFlags = NIF_MESSAGE | NIF_TIP;
-            nid.uCallbackMessage = WM_TRAYICON;
-            let tip = to_wide("Mem Reduct (Rust)");
-            for (i, &c) in tip.iter().take(127).enumerate() {
-                nid.szTip[i] = c;
-            }
-            Shell_NotifyIconW(NIM_ADD, &mut nid);
 
             SetTimer(hwnd, 1, 1000, None);
             0
@@ -863,7 +850,6 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
             let w = rc.right - rc.left;
             let h = rc.bottom - rc.top;
 
-            // Double buffering to eliminate all flickering
             let mem_dc = CreateCompatibleDC(hdc);
             let mem_bmp = CreateCompatibleBitmap(hdc, w, h);
             let old_bmp = SelectObject(mem_dc, mem_bmp);
@@ -899,8 +885,7 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
             GetClientRect(hwnd, &mut rc);
             let w = rc.right - rc.left;
 
-            let config = Config::load();
-            let new_target = hit_test(x, y, w, &config);
+            let new_target = hit_test(x, y, w);
             if new_target != HOVER_TARGET {
                 HOVER_TARGET = new_target;
                 InvalidateRect(hwnd, ptr::null(), 0);
@@ -924,7 +909,7 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
             let w = rc.right - rc.left;
 
             let mut config = Config::load();
-            if let Some(target) = hit_test(x, y, w, &config) {
+            if let Some(target) = hit_test(x, y, w) {
                 match target {
                     ClickTarget::TabOverview => {
                         ACTIVE_TAB = ActiveTab::Overview;
@@ -987,7 +972,6 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
             0
         }
         WM_TIMER => {
-            // Check auto-reduct
             let config = Config::load();
             if config.autoreduct_enable {
                 if let Ok(info) = get_memory_info() {
@@ -1003,7 +987,6 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
                 }
             }
 
-            // Update tray tooltip
             if let Ok(info) = get_memory_info() {
                 let mut nid: NOTIFYICONDATAW = std::mem::zeroed();
                 nid.cbSize = size_of::<NOTIFYICONDATAW>() as u32;
@@ -1063,7 +1046,6 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
             0
         }
         WM_DESTROY => {
-            destroy_fonts();
             KillTimer(hwnd, 1);
             let mut nid: NOTIFYICONDATAW = std::mem::zeroed();
             nid.cbSize = size_of::<NOTIFYICONDATAW>() as u32;
@@ -1102,32 +1084,40 @@ pub fn run_gui() -> Result<(), String> {
         let hinst = GetModuleHandleW(ptr::null());
         let class_name = to_wide("MemReductModernUI");
 
+        create_fonts();
+
+        let bg_brush = CreateSolidBrush(rgb(15, 17, 23));
+
         let wc = WNDCLASSEXW {
             cbSize: size_of::<WNDCLASSEXW>() as u32,
-            style: 0,
+            style: 0x0003, // CS_HREDRAW | CS_VREDRAW
             lpfnWndProc: wnd_proc,
             cbClsExtra: 0,
             cbWndExtra: 0,
             hInstance: hinst,
             hIcon: ptr::null_mut(),
             hCursor: LoadCursorW(ptr::null_mut(), IDC_ARROW),
-            hbrBackground: ptr::null_mut(), // Custom painted
+            hbrBackground: bg_brush,
             lpszMenuName: ptr::null(),
             lpszClassName: class_name.as_ptr(),
             hIconSm: ptr::null_mut(),
         };
 
-        RegisterClassExW(&wc);
+        let atom = RegisterClassExW(&wc);
+        let reg_err = GetLastError();
+        if atom == 0 && reg_err != 1410 {
+            DeleteObject(bg_brush as *mut _);
+            return Err(format!("Failed to register window class (error code {})", reg_err));
+        }
 
         let window_title = to_wide("Mem Reduct");
-        // Sleek modern proportions: 380px width, 535px height
         let hwnd = CreateWindowExW(
             0,
             class_name.as_ptr(),
             window_title.as_ptr(),
             WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX | WS_VISIBLE,
-            160,
-            120,
+            CW_USEDEFAULT,
+            CW_USEDEFAULT,
             380,
             535,
             ptr::null_mut(),
@@ -1136,9 +1126,16 @@ pub fn run_gui() -> Result<(), String> {
             ptr::null_mut(),
         );
 
+        let create_err = GetLastError();
         if hwnd.is_null() {
-            return Err("Failed to create main window".to_string());
+            DeleteObject(bg_brush as *mut _);
+            return Err(format!(
+                "Failed to create main window (error code {}, class registration atom: {})",
+                create_err, atom
+            ));
         }
+
+        setup_tray_icon(hwnd);
 
         ShowWindow(hwnd, SW_SHOW);
         UpdateWindow(hwnd);
@@ -1149,6 +1146,8 @@ pub fn run_gui() -> Result<(), String> {
             DispatchMessageW(&msg);
         }
 
+        DeleteObject(bg_brush as *mut _);
+        destroy_fonts();
         Ok(())
     }
 }
