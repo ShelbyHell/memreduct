@@ -54,12 +54,21 @@ const WM_TRAYICON: u32 = WM_USER + 1;
 const WM_CLEAN_FINISHED: u32 = WM_USER + 2;
 const WM_LBUTTONDBLCLK: u32 = 0x0203;
 const WM_RBUTTONUP: u32 = 0x0205;
+const WM_HOTKEY: u32 = 0x0312;
 
 const SC_MINIMIZE: usize = 0xF020;
 const HTCAPTION: isize = 2;
 
+const ID_HOTKEY_CLEAN: i32 = 1337;
+const MOD_CONTROL: u32 = 0x0002;
+const MOD_NOREPEAT: u32 = 0x4000;
+const VK_F1: u32 = 0x70;
+
 const MF_STRING: u32 = 0x00000000;
 const MF_SEPARATOR: u32 = 0x00000800;
+const MF_CHECKED: u32 = 0x00000008;
+const MF_UNCHECKED: u32 = 0x00000000;
+const MF_POPUP: u32 = 0x00000010;
 const TPM_RIGHTBUTTON: u32 = 0x0002;
 
 const IDC_ARROW: *const u16 = 32512 as *const u16;
@@ -80,6 +89,9 @@ const NIM_MODIFY: u32 = 0x00000001;
 const NIF_MESSAGE: u32 = 0x00000001;
 const NIF_ICON: u32 = 0x00000002;
 const NIF_TIP: u32 = 0x00000004;
+const NIF_INFO: u32 = 0x00000010;
+const NIIF_INFO: u32 = 0x00000001;
+const NIIF_NOSOUND: u32 = 0x00000010;
 
 const HWND_TOPMOST: HWND = -1isize as HWND;
 const HWND_NOTOPMOST: HWND = -2isize as HWND;
@@ -89,6 +101,44 @@ const SWP_NOSIZE: u32 = 0x0001;
 const IDM_TRAY_SHOWHIDE: usize = 101;
 const IDM_TRAY_CLEAN: usize = 102;
 const IDM_TRAY_EXIT: usize = 103;
+const IDM_TRAY_SETTINGS: usize = 104;
+
+// Clean Areas menu IDs (201..208)
+const IDM_AREA_WORKINGSET: usize = 201;
+const IDM_AREA_SYSTEMFILECACHE: usize = 202;
+const IDM_AREA_MODIFIEDFILECACHE: usize = 203;
+const IDM_AREA_STANDBY0: usize = 204;
+const IDM_AREA_STANDBY: usize = 205;
+const IDM_AREA_MODIFIED: usize = 206;
+const IDM_AREA_REGISTRY: usize = 207;
+const IDM_AREA_COMBINE: usize = 208;
+
+// Clean when above menu IDs (220..226)
+const IDM_ABOVE_DISABLED: usize = 220;
+const IDM_ABOVE_70: usize = 221;
+const IDM_ABOVE_75: usize = 222;
+const IDM_ABOVE_80: usize = 223;
+const IDM_ABOVE_85: usize = 224;
+const IDM_ABOVE_90: usize = 225;
+const IDM_ABOVE_95: usize = 226;
+
+// Clean every menu IDs (230..235)
+const IDM_EVERY_DISABLED: usize = 230;
+const IDM_EVERY_15: usize = 231;
+const IDM_EVERY_30: usize = 232;
+const IDM_EVERY_45: usize = 233;
+const IDM_EVERY_60: usize = 234;
+const IDM_EVERY_120: usize = 235;
+
+#[repr(C)]
+#[allow(non_snake_case)]
+struct ICONINFO {
+    fIcon: i32,
+    xHotspot: u32,
+    yHotspot: u32,
+    hbmMask: *mut std::ffi::c_void,
+    hbmColor: *mut std::ffi::c_void,
+}
 
 #[repr(C)]
 #[allow(non_snake_case)]
@@ -241,12 +291,21 @@ extern "system" {
         cy: i32,
         uFlags: u32,
     ) -> i32;
+    fn GetDC(hWnd: HWND) -> HDC;
+    fn ReleaseDC(hWnd: HWND, hDC: HDC) -> i32;
+    fn CreateIconIndirect(piconinfo: *mut ICONINFO) -> HICON;
+    fn DestroyIcon(hIcon: HICON) -> i32;
+    fn RegisterHotKey(hWnd: HWND, id: i32, fsModifiers: u32, vk: u32) -> i32;
+    fn UnregisterHotKey(hWnd: HWND, id: i32) -> i32;
+    fn MessageBeep(uType: u32) -> i32;
+    fn DestroyMenu(hMenu: HMENU) -> i32;
 }
 
 #[link(name = "gdi32")]
 extern "system" {
     fn CreateCompatibleDC(hdc: HDC) -> HDC;
     fn CreateCompatibleBitmap(hdc: HDC, cx: i32, cy: i32) -> *mut std::ffi::c_void;
+    fn CreateBitmap(nWidth: i32, nHeight: i32, nPlanes: u32, nBitCount: u32, lpBits: *const std::ffi::c_void) -> *mut std::ffi::c_void;
     fn SelectObject(hdc: HDC, h: *mut std::ffi::c_void) -> *mut std::ffi::c_void;
     fn DeleteObject(ho: *mut std::ffi::c_void) -> i32;
     fn DeleteDC(hdc: HDC) -> i32;
@@ -300,6 +359,7 @@ static mut CURRENT_MASK: u32 = REDUCT_MASK_DEFAULT;
 static mut LAST_CLEAN_TIME: Option<Instant> = None;
 static mut LAST_CLEAN_STATUS: Option<String> = None;
 static mut IS_MOUSE_TRACKED: bool = false;
+static mut CURRENT_TRAY_ICON: HICON = ptr::null_mut();
 static IS_CLEANING: AtomicBool = AtomicBool::new(false);
 
 // Fonts
@@ -318,11 +378,17 @@ enum ClickTarget {
     BtnClose,
     CleanButton,
     Chip(u32),
+    // Settings toggles
+    SettingAlwaysOnTop,
+    SettingAutostart,
+    SettingStartMinimized,
+    SettingBalloonNotifications,
+    SettingNotificationSound,
+    SettingHotkey,
     SettingAutoToggle,
     SettingLimit(u8),
     SettingIntervalToggle,
     SettingInterval(u64),
-    SettingAlwaysOnTop,
     SettingReset,
     SettingSave,
 }
@@ -691,28 +757,64 @@ unsafe fn render_tab_overview(hdc: HDC, w: i32, _h: i32) {
         draw_rounded_card(hdc, card_x, status_y, card_w, status_h, 8, rgb(20, 22, 30), rgb(32, 36, 48));
         draw_string(hdc, "Ready to optimize system memory", FONT_SMALL, rgb(148, 163, 184), card_x, status_y, card_w, status_h, DT_CENTER | DT_VCENTER);
     }
+
+    // 6. Hotkey Hint Banner
+    let hint_y = 488;
+    draw_rounded_card(hdc, card_x, hint_y, card_w, 24, 6, rgb(20, 24, 34), rgb(32, 38, 54));
+    draw_string(hdc, "⌨  Global Hotkey: Ctrl + F1 to clean memory anytime", FONT_SMALL, rgb(148, 163, 184), card_x, hint_y, card_w, 24, DT_CENTER | DT_VCENTER);
 }
 
 unsafe fn render_tab_settings(hdc: HDC, w: i32, _h: i32, config: &Config) {
     let card_x = 16;
     let card_w = w - 32;
 
-    // 1. Setting: Auto-Clean Threshold
-    let mut y = 56;
-    draw_rounded_card(hdc, card_x, y, card_w, 88, 12, rgb(24, 27, 36), rgb(38, 43, 58));
-    draw_string(hdc, "AUTO-REDUCT ON THRESHOLD", FONT_SMALL, rgb(148, 163, 184), card_x + 14, y + 10, 200, 16, DT_LEFT);
+    // 1. System & App Settings Card
+    let y1 = 54;
+    let h1 = 216;
+    draw_rounded_card(hdc, card_x, y1, card_w, h1, 12, rgb(24, 27, 36), rgb(38, 43, 58));
+    draw_string(hdc, "SYSTEM & APPLICATION SETTINGS", FONT_SMALL, rgb(148, 163, 184), card_x + 14, y1 + 8, 240, 16, DT_LEFT);
+
+    let rows: [(&str, bool, ClickTarget); 6] = [
+        ("Window always on top", config.always_on_top, ClickTarget::SettingAlwaysOnTop),
+        ("Load on Windows startup", config.load_on_startup, ClickTarget::SettingAutostart),
+        ("Start minimized to tray", config.start_minimized, ClickTarget::SettingStartMinimized),
+        ("Show balloon notifications", config.balloon_notifications, ClickTarget::SettingBalloonNotifications),
+        ("Notification sound effect", config.notification_sound, ClickTarget::SettingNotificationSound),
+        ("Global hotkey (Ctrl + F1)", config.hotkey_enable, ClickTarget::SettingHotkey),
+    ];
+
+    for (i, (label, val, target)) in rows.iter().enumerate() {
+        let ry = y1 + 26 + i as i32 * 31;
+        draw_string(hdc, label, FONT_BODY, rgb(226, 232, 240), card_x + 14, ry, 230, 22, DT_LEFT | DT_VCENTER);
+
+        let sw_x = card_x + card_w - 68;
+        let is_hover = HOVER_TARGET == Some(*target);
+        let sw_bg = if *val {
+            if is_hover { rgb(129, 140, 248) } else { rgb(99, 102, 241) }
+        } else {
+            if is_hover { rgb(55, 62, 82) } else { rgb(40, 45, 60) }
+        };
+        let sw_txt = if *val { "ON" } else { "OFF" };
+        draw_rounded_card(hdc, sw_x, ry, 54, 20, 10, sw_bg, sw_bg);
+        draw_string(hdc, sw_txt, FONT_SMALL, rgb(255, 255, 255), sw_x, ry, 54, 20, DT_CENTER | DT_VCENTER);
+    }
+
+    // 2. Setting: Auto-Clean Threshold
+    let y2 = 280;
+    draw_rounded_card(hdc, card_x, y2, card_w, 84, 12, rgb(24, 27, 36), rgb(38, 43, 58));
+    draw_string(hdc, "AUTO-REDUCT ON THRESHOLD", FONT_SMALL, rgb(148, 163, 184), card_x + 14, y2 + 8, 200, 16, DT_LEFT);
 
     let tog_text = if config.autoreduct_enable { "ACTIVE" } else { "DISABLED" };
     let tog_bg = if config.autoreduct_enable { rgb(16, 185, 129) } else { rgb(45, 50, 68) };
-    draw_rounded_card(hdc, card_x + card_w - 90, y + 10, 76, 20, 10, tog_bg, tog_bg);
-    draw_string(hdc, tog_text, FONT_SMALL, rgb(255, 255, 255), card_x + card_w - 90, y + 10, 76, 20, DT_CENTER | DT_VCENTER);
+    draw_rounded_card(hdc, card_x + card_w - 86, y2 + 8, 72, 20, 10, tog_bg, tog_bg);
+    draw_string(hdc, tog_text, FONT_SMALL, rgb(255, 255, 255), card_x + card_w - 86, y2 + 8, 72, 20, DT_CENTER | DT_VCENTER);
 
     let limits = [70u8, 75, 80, 85, 90, 95];
     let pill_w = 42;
     let pill_h = 24;
     for (i, &lim) in limits.iter().enumerate() {
         let px = card_x + 14 + i as i32 * (pill_w + 7);
-        let py = y + 44;
+        let py = y2 + 42;
         let is_sel = config.autoreduct_limit == lim;
         let bg = if is_sel { rgb(99, 102, 241) } else { rgb(32, 36, 48) };
         let tc = if is_sel { rgb(255, 255, 255) } else { rgb(160, 170, 190) };
@@ -720,21 +822,21 @@ unsafe fn render_tab_settings(hdc: HDC, w: i32, _h: i32, config: &Config) {
         draw_string(hdc, &format!("{}%", lim), FONT_SMALL, tc, px, py, pill_w, pill_h, DT_CENTER | DT_VCENTER);
     }
 
-    // 2. Setting: Periodic Interval
-    y = 154;
-    draw_rounded_card(hdc, card_x, y, card_w, 88, 12, rgb(24, 27, 36), rgb(38, 43, 58));
-    draw_string(hdc, "PERIODIC CLEANUP INTERVAL", FONT_SMALL, rgb(148, 163, 184), card_x + 14, y + 10, 200, 16, DT_LEFT);
+    // 3. Setting: Periodic Interval
+    let y3 = 374;
+    draw_rounded_card(hdc, card_x, y3, card_w, 84, 12, rgb(24, 27, 36), rgb(38, 43, 58));
+    draw_string(hdc, "PERIODIC CLEANUP INTERVAL", FONT_SMALL, rgb(148, 163, 184), card_x + 14, y3 + 8, 200, 16, DT_LEFT);
 
     let int_text = if config.autoreduct_interval_enable { "ACTIVE" } else { "DISABLED" };
     let int_bg = if config.autoreduct_interval_enable { rgb(16, 185, 129) } else { rgb(45, 50, 68) };
-    draw_rounded_card(hdc, card_x + card_w - 90, y + 10, 76, 20, 10, int_bg, int_bg);
-    draw_string(hdc, int_text, FONT_SMALL, rgb(255, 255, 255), card_x + card_w - 90, y + 10, 76, 20, DT_CENTER | DT_VCENTER);
+    draw_rounded_card(hdc, card_x + card_w - 86, y3 + 8, 72, 20, 10, int_bg, int_bg);
+    draw_string(hdc, int_text, FONT_SMALL, rgb(255, 255, 255), card_x + card_w - 86, y3 + 8, 72, 20, DT_CENTER | DT_VCENTER);
 
     let intervals = [15u64, 30, 45, 60, 120];
     let ipill_w = 52;
     for (i, &iv) in intervals.iter().enumerate() {
         let px = card_x + 14 + i as i32 * (ipill_w + 8);
-        let py = y + 44;
+        let py = y3 + 42;
         let is_sel = config.autoreduct_interval_minutes == iv;
         let bg = if is_sel { rgb(99, 102, 241) } else { rgb(32, 36, 48) };
         let tc = if is_sel { rgb(255, 255, 255) } else { rgb(160, 170, 190) };
@@ -742,27 +844,17 @@ unsafe fn render_tab_settings(hdc: HDC, w: i32, _h: i32, config: &Config) {
         draw_string(hdc, &format!("{}m", iv), FONT_SMALL, tc, px, py, ipill_w, pill_h, DT_CENTER | DT_VCENTER);
     }
 
-    // 3. Setting: Behavior & Always on top
-    y = 252;
-    draw_rounded_card(hdc, card_x, y, card_w, 64, 12, rgb(24, 27, 36), rgb(38, 43, 58));
-    draw_string(hdc, "WINDOW ALWAYS ON TOP", FONT_SUBTITLE, rgb(235, 240, 250), card_x + 14, y + 20, 180, 24, DT_LEFT | DT_VCENTER);
-
-    let top_text = if config.always_on_top { "ON" } else { "OFF" };
-    let top_bg = if config.always_on_top { rgb(99, 102, 241) } else { rgb(45, 50, 68) };
-    draw_rounded_card(hdc, card_x + card_w - 70, y + 18, 56, 24, 12, top_bg, top_bg);
-    draw_string(hdc, top_text, FONT_SUBTITLE, rgb(255, 255, 255), card_x + card_w - 70, y + 18, 56, 24, DT_CENTER | DT_VCENTER);
-
     // 4. Reset Button
-    y = 326;
+    let y4 = 470;
     let rst_bg = if HOVER_TARGET == Some(ClickTarget::SettingReset) { rgb(60, 30, 36) } else { rgb(36, 22, 26) };
-    draw_rounded_card(hdc, card_x, y, card_w, 40, 10, rst_bg, rgb(80, 36, 42));
-    draw_string(hdc, "↺  Reset Settings to Default", FONT_SUBTITLE, rgb(248, 113, 113), card_x, y, card_w, 40, DT_CENTER | DT_VCENTER);
+    draw_rounded_card(hdc, card_x, y4, card_w, 36, 10, rst_bg, rgb(80, 36, 42));
+    draw_string(hdc, "↺  Reset Settings to Default", FONT_SUBTITLE, rgb(248, 113, 113), card_x, y4, card_w, 36, DT_CENTER | DT_VCENTER);
 
     // 5. Save Button
-    y = 380;
+    let y5 = 514;
     let save_bg = if HOVER_TARGET == Some(ClickTarget::SettingSave) { rgb(52, 211, 153) } else { rgb(16, 185, 129) };
-    draw_rounded_card(hdc, card_x, y, card_w, 44, 12, save_bg, save_bg);
-    draw_string(hdc, "💾  SAVE & RETURN TO MONITOR", FONT_BTN, rgb(255, 255, 255), card_x, y, card_w, 44, DT_CENTER | DT_VCENTER);
+    draw_rounded_card(hdc, card_x, y5, card_w, 42, 12, save_bg, save_bg);
+    draw_string(hdc, "💾  SAVE & RETURN TO MONITOR", FONT_BTN, rgb(255, 255, 255), card_x, y5, card_w, 42, DT_CENTER | DT_VCENTER);
 }
 
 fn hit_test(x: i32, y: i32, w: i32) -> Option<ClickTarget> {
@@ -817,7 +909,19 @@ fn hit_test(x: i32, y: i32, w: i32) -> Option<ClickTarget> {
                 let card_x = 16;
                 let card_w = w - 32;
 
-                if x >= card_x + card_w - 90 && x <= card_x + card_w - 14 && y >= 66 && y <= 86 {
+                // Section 1: System toggles
+                let sw_x = card_x + card_w - 68;
+                if x >= sw_x && x <= sw_x + 56 {
+                    if y >= 76 && y <= 104 { return Some(ClickTarget::SettingAlwaysOnTop); }
+                    if y >= 107 && y <= 135 { return Some(ClickTarget::SettingAutostart); }
+                    if y >= 138 && y <= 166 { return Some(ClickTarget::SettingStartMinimized); }
+                    if y >= 169 && y <= 197 { return Some(ClickTarget::SettingBalloonNotifications); }
+                    if y >= 200 && y <= 228 { return Some(ClickTarget::SettingNotificationSound); }
+                    if y >= 231 && y <= 259 { return Some(ClickTarget::SettingHotkey); }
+                }
+
+                // Section 2: Auto-reduct threshold
+                if x >= card_x + card_w - 86 && x <= card_x + card_w - 14 && y >= 286 && y <= 308 {
                     return Some(ClickTarget::SettingAutoToggle);
                 }
 
@@ -826,13 +930,14 @@ fn hit_test(x: i32, y: i32, w: i32) -> Option<ClickTarget> {
                 let pill_h = 24;
                 for (i, &lim) in limits.iter().enumerate() {
                     let px = card_x + 14 + i as i32 * (pill_w + 7);
-                    let py = 100;
+                    let py = 322;
                     if x >= px && x <= px + pill_w && y >= py && y <= py + pill_h {
                         return Some(ClickTarget::SettingLimit(lim));
                     }
                 }
 
-                if x >= card_x + card_w - 90 && x <= card_x + card_w - 14 && y >= 164 && y <= 184 {
+                // Section 3: Interval
+                if x >= card_x + card_w - 86 && x <= card_x + card_w - 14 && y >= 380 && y <= 402 {
                     return Some(ClickTarget::SettingIntervalToggle);
                 }
 
@@ -840,21 +945,18 @@ fn hit_test(x: i32, y: i32, w: i32) -> Option<ClickTarget> {
                 let ipill_w = 52;
                 for (i, &iv) in intervals.iter().enumerate() {
                     let px = card_x + 14 + i as i32 * (ipill_w + 8);
-                    let py = 198;
+                    let py = 416;
                     if x >= px && x <= px + ipill_w && y >= py && y <= py + pill_h {
                         return Some(ClickTarget::SettingInterval(iv));
                     }
                 }
 
-                if x >= card_x + card_w - 70 && x <= card_x + card_w - 14 && y >= 270 && y <= 294 {
-                    return Some(ClickTarget::SettingAlwaysOnTop);
-                }
-
-                if x >= card_x && x <= card_x + card_w && y >= 326 && y <= 366 {
+                // Section 4: Buttons
+                if x >= card_x && x <= card_x + card_w && y >= 470 && y <= 506 {
                     return Some(ClickTarget::SettingReset);
                 }
 
-                if x >= card_x && x <= card_x + card_w && y >= 380 && y <= 424 {
+                if x >= card_x && x <= card_x + card_w && y >= 514 && y <= 556 {
                     return Some(ClickTarget::SettingSave);
                 }
             }
@@ -863,14 +965,102 @@ fn hit_test(x: i32, y: i32, w: i32) -> Option<ClickTarget> {
     None
 }
 
+unsafe fn create_dynamic_tray_icon(percent: u8, warning_lvl: u8, danger_lvl: u8) -> HICON {
+    let screen_dc = GetDC(ptr::null_mut());
+    if screen_dc.is_null() {
+        return ptr::null_mut();
+    }
+
+    let hdc = CreateCompatibleDC(screen_dc);
+    let hbm_color = CreateCompatibleBitmap(screen_dc, 16, 16);
+    let hbm_mask = CreateBitmap(16, 16, 1, 1, ptr::null());
+
+    let old_bmp = SelectObject(hdc, hbm_color);
+
+    let bg_color = if percent >= danger_lvl {
+        rgb(236, 28, 36)   // Danger: Red (#EC1C24)
+    } else if percent >= warning_lvl {
+        rgb(255, 128, 64)  // Warning: Orange (#FF8040)
+    } else {
+        rgb(0, 128, 64)    // Normal: Green (#008040)
+    };
+
+    draw_rounded_card(hdc, 0, 0, 16, 16, 4, bg_color, bg_color);
+
+    let font_name = to_wide("Tahoma");
+    let font = CreateFontW(10, 0, 0, 0, 700, 0, 0, 0, 1, 0, 0, 5, 0, font_name.as_ptr());
+    let old_font = SelectObject(hdc, font as *mut _);
+
+    SetTextColor(hdc, rgb(255, 255, 255));
+    SetBkMode(hdc, TRANSPARENT);
+
+    let text = format!("{}", percent.min(99));
+    let text_wide = to_wide(&text);
+    let mut rc = RECT { left: 0, top: 0, right: 16, bottom: 16 };
+    DrawTextW(hdc, text_wide.as_ptr(), -1, &mut rc, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+
+    SelectObject(hdc, old_font);
+    DeleteObject(font as *mut _);
+
+    SelectObject(hdc, old_bmp);
+    DeleteDC(hdc);
+    ReleaseDC(ptr::null_mut(), screen_dc);
+
+    let mut ii = ICONINFO {
+        fIcon: 1,
+        xHotspot: 0,
+        yHotspot: 0,
+        hbmMask: hbm_mask,
+        hbmColor: hbm_color,
+    };
+
+    let hicon = CreateIconIndirect(&mut ii);
+
+    DeleteObject(hbm_color);
+    DeleteObject(hbm_mask);
+
+    hicon
+}
+
+unsafe fn show_balloon_notification(hwnd: HWND, title: &str, message: &str, sound: bool) {
+    let mut nid: NOTIFYICONDATAW = std::mem::zeroed();
+    nid.cbSize = size_of::<NOTIFYICONDATAW>() as u32;
+    nid.hWnd = hwnd;
+    nid.uID = 1;
+    nid.uFlags = NIF_INFO;
+    nid.dwInfoFlags = NIIF_INFO | if sound { 0 } else { NIIF_NOSOUND };
+
+    let title_w = to_wide(title);
+    for (i, &c) in title_w.iter().take(63).enumerate() {
+        nid.szInfoTitle[i] = c;
+    }
+    let msg_w = to_wide(message);
+    for (i, &c) in msg_w.iter().take(255).enumerate() {
+        nid.szInfo[i] = c;
+    }
+
+    Shell_NotifyIconW(NIM_MODIFY, &mut nid);
+
+    if sound {
+        MessageBeep(0x00000040); // MB_ICONASTERISK
+    }
+}
+
 unsafe fn setup_tray_icon(hwnd: HWND) {
     let mut nid: NOTIFYICONDATAW = std::mem::zeroed();
     nid.cbSize = size_of::<NOTIFYICONDATAW>() as u32;
     nid.hWnd = hwnd;
     nid.uID = 1;
-    nid.uFlags = NIF_MESSAGE | NIF_TIP;
+    nid.uFlags = NIF_MESSAGE | NIF_TIP | NIF_ICON;
     nid.uCallbackMessage = WM_TRAYICON;
-    let tip = to_wide("Mem Reduct (Rust)");
+
+    let config = Config::load();
+    let initial_pct = get_memory_info().map(|m| m.percent_physical).unwrap_or(0);
+    let hicon = create_dynamic_tray_icon(initial_pct, config.warning_level, config.danger_level);
+    nid.hIcon = hicon;
+    CURRENT_TRAY_ICON = hicon;
+
+    let tip = to_wide(&format!("Mem Reduct: {}% RAM used", initial_pct));
     for (i, &c) in tip.iter().take(127).enumerate() {
         nid.szTip[i] = c;
     }
@@ -893,7 +1083,17 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
                 SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE);
             }
 
+            if config.hotkey_enable {
+                RegisterHotKey(hwnd, ID_HOTKEY_CLEAN, MOD_CONTROL | MOD_NOREPEAT, VK_F1);
+            }
+
             SetTimer(hwnd, 1, 1000, None);
+            0
+        }
+        WM_HOTKEY => {
+            if (wparam as i32) == ID_HOTKEY_CLEAN {
+                do_clean(hwnd);
+            }
             0
         }
         WM_PAINT => {
@@ -994,6 +1194,43 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
                         let _ = config.save();
                         InvalidateRect(hwnd, ptr::null(), 0);
                     }
+                    ClickTarget::SettingAlwaysOnTop => {
+                        config.always_on_top = !config.always_on_top;
+                        let insert = if config.always_on_top { HWND_TOPMOST } else { HWND_NOTOPMOST };
+                        SetWindowPos(hwnd, insert, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE);
+                        let _ = config.save();
+                        InvalidateRect(hwnd, ptr::null(), 0);
+                    }
+                    ClickTarget::SettingAutostart => {
+                        config.load_on_startup = !config.load_on_startup;
+                        let _ = config.save();
+                        InvalidateRect(hwnd, ptr::null(), 0);
+                    }
+                    ClickTarget::SettingStartMinimized => {
+                        config.start_minimized = !config.start_minimized;
+                        let _ = config.save();
+                        InvalidateRect(hwnd, ptr::null(), 0);
+                    }
+                    ClickTarget::SettingBalloonNotifications => {
+                        config.balloon_notifications = !config.balloon_notifications;
+                        let _ = config.save();
+                        InvalidateRect(hwnd, ptr::null(), 0);
+                    }
+                    ClickTarget::SettingNotificationSound => {
+                        config.notification_sound = !config.notification_sound;
+                        let _ = config.save();
+                        InvalidateRect(hwnd, ptr::null(), 0);
+                    }
+                    ClickTarget::SettingHotkey => {
+                        config.hotkey_enable = !config.hotkey_enable;
+                        if config.hotkey_enable {
+                            RegisterHotKey(hwnd, ID_HOTKEY_CLEAN, MOD_CONTROL | MOD_NOREPEAT, VK_F1);
+                        } else {
+                            UnregisterHotKey(hwnd, ID_HOTKEY_CLEAN);
+                        }
+                        let _ = config.save();
+                        InvalidateRect(hwnd, ptr::null(), 0);
+                    }
                     ClickTarget::SettingAutoToggle => {
                         config.autoreduct_enable = !config.autoreduct_enable;
                         let _ = config.save();
@@ -1011,13 +1248,6 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
                     }
                     ClickTarget::SettingInterval(val) => {
                         config.autoreduct_interval_minutes = val;
-                        let _ = config.save();
-                        InvalidateRect(hwnd, ptr::null(), 0);
-                    }
-                    ClickTarget::SettingAlwaysOnTop => {
-                        config.always_on_top = !config.always_on_top;
-                        let insert = if config.always_on_top { HWND_TOPMOST } else { HWND_NOTOPMOST };
-                        SetWindowPos(hwnd, insert, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE);
                         let _ = config.save();
                         InvalidateRect(hwnd, ptr::null(), 0);
                     }
@@ -1049,10 +1279,20 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
                     Ok(rep) => {
                         LAST_CLEAN_TIME = Some(Instant::now());
                         let freed = format_bytes(rep.bytes_freed);
-                        LAST_CLEAN_STATUS = Some(format!(
+                        let status_str = format!(
                             "✓ Memory released: {} ({}% -> {}) in {:.1?}",
                             freed, rep.mem_before.percent_physical, rep.mem_after.percent_physical, rep.duration
-                        ));
+                        );
+                        LAST_CLEAN_STATUS = Some(status_str);
+
+                        let config = Config::load();
+                        if config.balloon_notifications {
+                            let balloon_msg = format!(
+                                "Memory cleaned: {}\nUsage: {}% -> {}%",
+                                freed, rep.mem_before.percent_physical, rep.mem_after.percent_physical
+                            );
+                            show_balloon_notification(hwnd, "Mem Reduct", &balloon_msg, config.notification_sound);
+                        }
                     }
                     Err(e) => {
                         LAST_CLEAN_STATUS = Some(format!("Error: {}", e));
@@ -1092,18 +1332,33 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
             }
 
             if let Ok(info) = get_memory_info() {
-                let mut nid: NOTIFYICONDATAW = std::mem::zeroed();
-                nid.cbSize = size_of::<NOTIFYICONDATAW>() as u32;
-                nid.hWnd = hwnd;
-                nid.uID = 1;
-                nid.uFlags = NIF_TIP;
+                // Update dynamic tray icon with live RAM % number and color
+                let new_icon = create_dynamic_tray_icon(info.percent_physical, config.warning_level, config.danger_level);
+                if !new_icon.is_null() {
+                    let mut nid: NOTIFYICONDATAW = std::mem::zeroed();
+                    nid.cbSize = size_of::<NOTIFYICONDATAW>() as u32;
+                    nid.hWnd = hwnd;
+                    nid.uID = 1;
+                    nid.uFlags = NIF_ICON | NIF_TIP;
+                    nid.hIcon = new_icon;
 
-                let tip = format!("Mem Reduct: {}% RAM used", info.percent_physical);
-                let tip_wide = to_wide(&tip);
-                for (i, &c) in tip_wide.iter().take(127).enumerate() {
-                    nid.szTip[i] = c;
+                    let tip = format!(
+                        "Mem Reduct: {}% ({} / {})",
+                        info.percent_physical,
+                        format_bytes(info.used_physical),
+                        format_bytes(info.total_physical)
+                    );
+                    let tip_wide = to_wide(&tip);
+                    for (i, &c) in tip_wide.iter().take(127).enumerate() {
+                        nid.szTip[i] = c;
+                    }
+                    Shell_NotifyIconW(NIM_MODIFY, &mut nid);
+
+                    if !CURRENT_TRAY_ICON.is_null() {
+                        DestroyIcon(CURRENT_TRAY_ICON);
+                    }
+                    CURRENT_TRAY_ICON = new_icon;
                 }
-                Shell_NotifyIconW(NIM_MODIFY, &mut nid);
             }
 
             InvalidateRect(hwnd, ptr::null(), 0);
@@ -1121,31 +1376,131 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
             } else if event == WM_RBUTTONUP {
                 let mut pt: POINT = std::mem::zeroed();
                 GetCursorPos(&mut pt);
+                let config = Config::load();
                 let htray = CreatePopupMenu();
+
                 AppendMenuW(htray, MF_STRING, IDM_TRAY_SHOWHIDE, to_wide("Show / Hide").as_ptr());
                 AppendMenuW(htray, MF_SEPARATOR, 0, ptr::null());
                 AppendMenuW(htray, MF_STRING, IDM_TRAY_CLEAN, to_wide("⚡ Clean Memory").as_ptr());
+                AppendMenuW(htray, MF_SEPARATOR, 0, ptr::null());
+
+                // Submenu: Clean areas
+                let hareas = CreatePopupMenu();
+                let reg_items = [
+                    (REDUCT_WORKINGSET, IDM_AREA_WORKINGSET, "Working Set"),
+                    (REDUCT_SYSTEMFILECACHE, IDM_AREA_SYSTEMFILECACHE, "System File Cache"),
+                    (REDUCT_MODIFIEDFILECACHE, IDM_AREA_MODIFIEDFILECACHE, "Modified File Cache"),
+                    (REDUCT_STANDBYPRIORITY0LIST, IDM_AREA_STANDBY0, "Standby List (Priority 0)"),
+                    (REDUCT_STANDBYLIST, IDM_AREA_STANDBY, "Standby List"),
+                    (REDUCT_MODIFIEDLIST, IDM_AREA_MODIFIED, "Modified Page List"),
+                    (REDUCT_REGISTRYCACHE, IDM_AREA_REGISTRY, "Registry Cache"),
+                    (REDUCT_COMBINEMEMORYLISTS, IDM_AREA_COMBINE, "Combine Memory Lists"),
+                ];
+                for (bit, id, label) in &reg_items {
+                    let checked = (CURRENT_MASK & *bit) != 0;
+                    let flags = MF_STRING | if checked { MF_CHECKED } else { MF_UNCHECKED };
+                    AppendMenuW(hareas, flags, *id, to_wide(label).as_ptr());
+                }
+                AppendMenuW(htray, MF_POPUP, hareas as usize, to_wide("Clean Areas").as_ptr());
+
+                // Submenu: Clean when above
+                let habove = CreatePopupMenu();
+                let above_items = [
+                    (0u8, IDM_ABOVE_DISABLED, "Disabled"),
+                    (70, IDM_ABOVE_70, "70%"),
+                    (75, IDM_ABOVE_75, "75%"),
+                    (80, IDM_ABOVE_80, "80%"),
+                    (85, IDM_ABOVE_85, "85%"),
+                    (90, IDM_ABOVE_90, "90%"),
+                    (95, IDM_ABOVE_95, "95%"),
+                ];
+                for (lvl, id, label) in &above_items {
+                    let checked = if *lvl == 0 { !config.autoreduct_enable } else { config.autoreduct_enable && config.autoreduct_limit == *lvl };
+                    let flags = MF_STRING | if checked { MF_CHECKED } else { MF_UNCHECKED };
+                    AppendMenuW(habove, flags, *id, to_wide(label).as_ptr());
+                }
+                AppendMenuW(htray, MF_POPUP, habove as usize, to_wide("Clean When Above").as_ptr());
+
+                // Submenu: Clean every
+                let hevery = CreatePopupMenu();
+                let every_items = [
+                    (0u64, IDM_EVERY_DISABLED, "Disabled"),
+                    (15, IDM_EVERY_15, "15 min"),
+                    (30, IDM_EVERY_30, "30 min"),
+                    (45, IDM_EVERY_45, "45 min"),
+                    (60, IDM_EVERY_60, "60 min"),
+                    (120, IDM_EVERY_120, "120 min"),
+                ];
+                for (iv, id, label) in &every_items {
+                    let checked = if *iv == 0 { !config.autoreduct_interval_enable } else { config.autoreduct_interval_enable && config.autoreduct_interval_minutes == *iv };
+                    let flags = MF_STRING | if checked { MF_CHECKED } else { MF_UNCHECKED };
+                    AppendMenuW(hevery, flags, *id, to_wide(label).as_ptr());
+                }
+                AppendMenuW(htray, MF_POPUP, hevery as usize, to_wide("Clean Every").as_ptr());
+
+                AppendMenuW(htray, MF_SEPARATOR, 0, ptr::null());
+                AppendMenuW(htray, MF_STRING, IDM_TRAY_SETTINGS, to_wide("Settings...").as_ptr());
                 AppendMenuW(htray, MF_SEPARATOR, 0, ptr::null());
                 AppendMenuW(htray, MF_STRING, IDM_TRAY_EXIT, to_wide("Exit").as_ptr());
 
                 SetForegroundWindow(hwnd);
                 TrackPopupMenu(htray, TPM_RIGHTBUTTON, pt.x, pt.y, 0, hwnd, ptr::null());
+                DestroyMenu(htray);
             }
             0
         }
         WM_COMMAND => {
             let id = wparam & 0xFFFF;
-            if id == IDM_TRAY_SHOWHIDE {
-                if IsWindowVisible(hwnd) != 0 {
-                    ShowWindow(hwnd, SW_HIDE);
-                } else {
+            let mut config = Config::load();
+            match id {
+                IDM_TRAY_SHOWHIDE => {
+                    if IsWindowVisible(hwnd) != 0 {
+                        ShowWindow(hwnd, SW_HIDE);
+                    } else {
+                        ShowWindow(hwnd, SW_SHOW);
+                        SetForegroundWindow(hwnd);
+                    }
+                }
+                IDM_TRAY_CLEAN => {
+                    do_clean(hwnd);
+                }
+                IDM_TRAY_SETTINGS => {
+                    ACTIVE_TAB = ActiveTab::Settings;
                     ShowWindow(hwnd, SW_SHOW);
                     SetForegroundWindow(hwnd);
+                    InvalidateRect(hwnd, ptr::null(), 0);
                 }
-            } else if id == IDM_TRAY_CLEAN {
-                do_clean(hwnd);
-            } else if id == IDM_TRAY_EXIT {
-                PostQuitMessage(0);
+                IDM_TRAY_EXIT => {
+                    PostQuitMessage(0);
+                }
+                // Clean Areas: 201..208
+                IDM_AREA_WORKINGSET => { CURRENT_MASK ^= REDUCT_WORKINGSET; config.reduct_mask = CURRENT_MASK; let _ = config.save(); InvalidateRect(hwnd, ptr::null(), 0); }
+                IDM_AREA_SYSTEMFILECACHE => { CURRENT_MASK ^= REDUCT_SYSTEMFILECACHE; config.reduct_mask = CURRENT_MASK; let _ = config.save(); InvalidateRect(hwnd, ptr::null(), 0); }
+                IDM_AREA_MODIFIEDFILECACHE => { CURRENT_MASK ^= REDUCT_MODIFIEDFILECACHE; config.reduct_mask = CURRENT_MASK; let _ = config.save(); InvalidateRect(hwnd, ptr::null(), 0); }
+                IDM_AREA_STANDBY0 => { CURRENT_MASK ^= REDUCT_STANDBYPRIORITY0LIST; config.reduct_mask = CURRENT_MASK; let _ = config.save(); InvalidateRect(hwnd, ptr::null(), 0); }
+                IDM_AREA_STANDBY => { CURRENT_MASK ^= REDUCT_STANDBYLIST; config.reduct_mask = CURRENT_MASK; let _ = config.save(); InvalidateRect(hwnd, ptr::null(), 0); }
+                IDM_AREA_MODIFIED => { CURRENT_MASK ^= REDUCT_MODIFIEDLIST; config.reduct_mask = CURRENT_MASK; let _ = config.save(); InvalidateRect(hwnd, ptr::null(), 0); }
+                IDM_AREA_REGISTRY => { CURRENT_MASK ^= REDUCT_REGISTRYCACHE; config.reduct_mask = CURRENT_MASK; let _ = config.save(); InvalidateRect(hwnd, ptr::null(), 0); }
+                IDM_AREA_COMBINE => { CURRENT_MASK ^= REDUCT_COMBINEMEMORYLISTS; config.reduct_mask = CURRENT_MASK; let _ = config.save(); InvalidateRect(hwnd, ptr::null(), 0); }
+
+                // Clean when above: 220..226
+                IDM_ABOVE_DISABLED => { config.autoreduct_enable = false; let _ = config.save(); InvalidateRect(hwnd, ptr::null(), 0); }
+                IDM_ABOVE_70 => { config.autoreduct_enable = true; config.autoreduct_limit = 70; let _ = config.save(); InvalidateRect(hwnd, ptr::null(), 0); }
+                IDM_ABOVE_75 => { config.autoreduct_enable = true; config.autoreduct_limit = 75; let _ = config.save(); InvalidateRect(hwnd, ptr::null(), 0); }
+                IDM_ABOVE_80 => { config.autoreduct_enable = true; config.autoreduct_limit = 80; let _ = config.save(); InvalidateRect(hwnd, ptr::null(), 0); }
+                IDM_ABOVE_85 => { config.autoreduct_enable = true; config.autoreduct_limit = 85; let _ = config.save(); InvalidateRect(hwnd, ptr::null(), 0); }
+                IDM_ABOVE_90 => { config.autoreduct_enable = true; config.autoreduct_limit = 90; let _ = config.save(); InvalidateRect(hwnd, ptr::null(), 0); }
+                IDM_ABOVE_95 => { config.autoreduct_enable = true; config.autoreduct_limit = 95; let _ = config.save(); InvalidateRect(hwnd, ptr::null(), 0); }
+
+                // Clean every: 230..235
+                IDM_EVERY_DISABLED => { config.autoreduct_interval_enable = false; let _ = config.save(); InvalidateRect(hwnd, ptr::null(), 0); }
+                IDM_EVERY_15 => { config.autoreduct_interval_enable = true; config.autoreduct_interval_minutes = 15; let _ = config.save(); InvalidateRect(hwnd, ptr::null(), 0); }
+                IDM_EVERY_30 => { config.autoreduct_interval_enable = true; config.autoreduct_interval_minutes = 30; let _ = config.save(); InvalidateRect(hwnd, ptr::null(), 0); }
+                IDM_EVERY_45 => { config.autoreduct_interval_enable = true; config.autoreduct_interval_minutes = 45; let _ = config.save(); InvalidateRect(hwnd, ptr::null(), 0); }
+                IDM_EVERY_60 => { config.autoreduct_interval_enable = true; config.autoreduct_interval_minutes = 60; let _ = config.save(); InvalidateRect(hwnd, ptr::null(), 0); }
+                IDM_EVERY_120 => { config.autoreduct_interval_enable = true; config.autoreduct_interval_minutes = 120; let _ = config.save(); InvalidateRect(hwnd, ptr::null(), 0); }
+
+                _ => {}
             }
             0
         }
@@ -1171,11 +1526,16 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
         }
         WM_DESTROY => {
             KillTimer(hwnd, 1);
+            UnregisterHotKey(hwnd, ID_HOTKEY_CLEAN);
             let mut nid: NOTIFYICONDATAW = std::mem::zeroed();
             nid.cbSize = size_of::<NOTIFYICONDATAW>() as u32;
             nid.hWnd = hwnd;
             nid.uID = 1;
             Shell_NotifyIconW(NIM_DELETE, &mut nid);
+            if !CURRENT_TRAY_ICON.is_null() {
+                DestroyIcon(CURRENT_TRAY_ICON);
+                CURRENT_TRAY_ICON = ptr::null_mut();
+            }
             PostQuitMessage(0);
             0
         }
@@ -1240,6 +1600,7 @@ pub fn run_gui() -> Result<(), String> {
             return Err(format!("Failed to register window class (error code {})", reg_err));
         }
 
+        let config = Config::load();
         let window_title = to_wide("Mem Reduct");
         let hwnd = CreateWindowExW(
             0,
@@ -1248,8 +1609,8 @@ pub fn run_gui() -> Result<(), String> {
             WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX | WS_VISIBLE,
             CW_USEDEFAULT,
             CW_USEDEFAULT,
-            410,
-            545,
+            420,
+            630,
             ptr::null_mut(),
             ptr::null_mut(),
             hinst,
@@ -1267,8 +1628,12 @@ pub fn run_gui() -> Result<(), String> {
 
         setup_tray_icon(hwnd);
 
-        ShowWindow(hwnd, SW_SHOW);
-        UpdateWindow(hwnd);
+        if !config.start_minimized {
+            ShowWindow(hwnd, SW_SHOW);
+            UpdateWindow(hwnd);
+        } else {
+            ShowWindow(hwnd, SW_HIDE);
+        }
 
         let mut msg: MSG = std::mem::zeroed();
         while GetMessageW(&mut msg, ptr::null_mut(), 0, 0) > 0 {
