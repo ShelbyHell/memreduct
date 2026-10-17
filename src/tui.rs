@@ -304,75 +304,139 @@ fn render_dashboard(
     }
     out.push('\n');
 
-    // Physical Memory
+    // 1. Physical Memory Group
     let p_color = get_level_color(info.percent_physical);
+    out.push_str(&format!("  {}Physical memory{}\n", COLOR_BOLD, COLOR_RESET));
     out.push_str(&format!(
-        "  {}Physical Memory:{}  {} {}{:>3}%{}\n",
-        COLOR_BOLD,
-        COLOR_RESET,
-        render_bar(info.percent_physical, 28),
+        "    Usage:                                  {}{:>3}%{}  {}\n",
         p_color,
         info.percent_physical,
-        COLOR_RESET
+        COLOR_RESET,
+        render_bar(info.percent_physical, 16)
     ));
     out.push_str(&format!(
-        "    Used: {}{:<10}{} | Available: {:<10} | Total: {}\n\n",
-        p_color,
-        format_bytes(info.used_physical),
-        COLOR_RESET,
-        format_bytes(info.avail_physical),
+        "    Available:                              {:>10}\n",
+        format_bytes(info.avail_physical)
+    ));
+    out.push_str(&format!(
+        "    Total available:                        {:>10}\n\n",
         format_bytes(info.total_physical)
     ));
 
-    // Pagefile / Swap
+    // 2. Pagefile Group
+    out.push_str(&format!("  {}Pagefile{}\n", COLOR_BOLD, COLOR_RESET));
     if info.total_pagefile > 0 {
         let pf_color = get_level_color(info.percent_pagefile);
         out.push_str(&format!(
-            "  {}Pagefile / Swap:{}  {} {}{:>3}%{}\n",
-            COLOR_BOLD,
-            COLOR_RESET,
-            render_bar(info.percent_pagefile, 28),
+            "    Usage:                                  {}{:>3}%{}  {}\n",
             pf_color,
             info.percent_pagefile,
-            COLOR_RESET
+            COLOR_RESET,
+            render_bar(info.percent_pagefile, 16)
         ));
         out.push_str(&format!(
-            "    Used: {}{:<10}{} | Available: {:<10} | Total: {}\n\n",
-            pf_color,
-            format_bytes(info.used_pagefile),
-            COLOR_RESET,
-            format_bytes(info.avail_pagefile),
+            "    Available:                              {:>10}\n",
+            format_bytes(info.avail_pagefile)
+        ));
+        out.push_str(&format!(
+            "    Total available:                        {:>10}\n\n",
             format_bytes(info.total_pagefile)
         ));
+    } else {
+        out.push_str("    Usage:                                         N/A\n");
+        out.push_str("    Available:                                     N/A\n");
+        out.push_str("    Total available:                               N/A\n\n");
     }
 
-    // Cache line
-    let cached_str = info.cached.map(format_bytes).unwrap_or_else(|| "N/A".into());
-    let buffers_str = info.buffers.map(format_bytes).unwrap_or_else(|| "N/A".into());
+    // 3. System working set Group
+    out.push_str(&format!("  {}System working set{}\n", COLOR_BOLD, COLOR_RESET));
+    if let Some(cached) = info.cached {
+        let pct = if info.total_physical > 0 {
+            ((cached as f64 / info.total_physical as f64) * 100.0).round().min(100.0) as u8
+        } else {
+            0
+        };
+        let c_color = get_level_color(pct);
+        out.push_str(&format!(
+            "    Usage:                                  {}{:>3}%{}  {}\n",
+            c_color,
+            pct,
+            COLOR_RESET,
+            render_bar(pct, 16)
+        ));
+        out.push_str(&format!(
+            "    Available:                              {:>10}\n",
+            format_bytes(cached)
+        ));
+        out.push_str(&format!(
+            "    Total available:                        {:>10}\n",
+            format_bytes(info.total_physical)
+        ));
+    } else {
+        out.push_str("    Usage:                                         N/A\n");
+        out.push_str("    Available:                                     N/A\n");
+        out.push_str("    Total available:                               N/A\n");
+    }
+
+    out.push_str(&format!("  {}\n", "─".repeat(58)));
+
+    // Clean memory button box
     out.push_str(&format!(
-        "  {}File Cache:{} {} | {}Buffers:{} {}\n",
-        COLOR_BOLD, COLOR_RESET, cached_str, COLOR_BOLD, COLOR_RESET, buffers_str
+        "                 {}┌──────────────────────────────────┐{}\n",
+        COLOR_BOLD, COLOR_RESET
     ));
-    out.push_str(&format!("  {}\n", "─".repeat(60)));
+    out.push_str(&format!(
+        "                 {}│        [ Clean memory ]          │{} (Press SPACE / C)\n",
+        COLOR_GREEN, COLOR_RESET
+    ));
+    out.push_str(&format!(
+        "                 {}└──────────────────────────────────┘{}\n\n",
+        COLOR_BOLD, COLOR_RESET
+    ));
+
+    // Status message or last clean report
+    if let Some((msg, col)) = status_msg {
+        out.push_str(&format!("  Status: {}{}{}\n", col, msg, COLOR_RESET));
+    } else if let Some(rep) = last_report {
+        out.push_str(&format!(
+            "  Status: {}Memory was released with {} result. ({}% -> {}% in {:.1?}){}\n",
+            COLOR_GREEN,
+            format_bytes(rep.bytes_freed),
+            rep.mem_before.percent_physical,
+            rep.mem_after.percent_physical,
+            rep.duration,
+            COLOR_RESET
+        ));
+    } else {
+        out.push_str("  Status: Ready\n");
+    }
+    out.push_str(&format!("  {}\n", "─".repeat(58)));
 
     // Memory Regions Checklist
-    out.push_str(&format!("  {}Memory Regions to Clean (press 1-8 to toggle):{}\n", COLOR_BOLD, COLOR_RESET));
-
-    let check = |bit: u32| {
+    let check = |bit: u32, num: &str, label: &str| {
         if (mask & bit) != 0 {
-            format!("{}[✓]{}", COLOR_GREEN, COLOR_RESET)
+            format!("{}[✓] {}.{}{}", COLOR_GREEN, num, label, COLOR_RESET)
         } else {
-            format!("{}[ ]{}", COLOR_GRAY, COLOR_RESET)
+            format!("{}[ ] {}.{}{}", COLOR_GRAY, num, label, COLOR_RESET)
         }
     };
 
-    out.push_str(&format!("    {} 1. Working Set          {} 5. Modified Page List\n", check(REDUCT_WORKINGSET), check(REDUCT_MODIFIEDLIST)));
-    out.push_str(&format!("    {} 2. System File Cache    {} 6. Combine Memory Lists\n", check(REDUCT_SYSTEMFILECACHE), check(REDUCT_COMBINEMEMORYLISTS)));
-    out.push_str(&format!("    {} 3. Standby (Prio 0)     {} 7. Registry Cache\n", check(REDUCT_STANDBYPRIORITY0LIST), check(REDUCT_REGISTRYCACHE)));
-    out.push_str(&format!("    {} 4. Standby List (All)   {} 8. Flush Volume Cache\n", check(REDUCT_STANDBYLIST), check(REDUCT_MODIFIEDFILECACHE)));
-    out.push('\n');
+    out.push_str(&format!(
+        "  Areas: {} {} {} {}\n",
+        check(REDUCT_WORKINGSET, "1", "WS"),
+        check(REDUCT_SYSTEMFILECACHE, "2", "Cache"),
+        check(REDUCT_STANDBYPRIORITY0LIST, "3", "Prio0"),
+        check(REDUCT_STANDBYLIST, "4", "Standby")
+    ));
+    out.push_str(&format!(
+        "         {} {} {} {}\n",
+        check(REDUCT_MODIFIEDLIST, "5", "Modified"),
+        check(REDUCT_COMBINEMEMORYLISTS, "6", "Combine"),
+        check(REDUCT_REGISTRYCACHE, "7", "Registry"),
+        check(REDUCT_MODIFIEDFILECACHE, "8", "Volume")
+    ));
 
-    // Auto-clean settings
+    // Auto-clean settings line
     let auto_status = if auto_enabled {
         format!("{}[ON: >= {}%]{}", COLOR_GREEN, auto_limit, COLOR_RESET)
     } else {
@@ -383,30 +447,14 @@ fn render_dashboard(
     } else {
         format!("{}[OFF]{}", COLOR_GRAY, COLOR_RESET)
     };
-    out.push_str(&format!("  {}Auto-Clean:{} {} (toggle: [A], limit: [T]) | {}Interval:{} {} (toggle: [I])\n", COLOR_BOLD, COLOR_RESET, auto_status, COLOR_BOLD, COLOR_RESET, int_status));
-    out.push_str(&format!("  {}\n", "─".repeat(60)));
-
-    // Status message or last clean report
-    if let Some((msg, col)) = status_msg {
-        out.push_str(&format!("  {}{}{}\n\n", col, msg, COLOR_RESET));
-    } else if let Some(rep) = last_report {
-        out.push_str(&format!(
-            "  {}Last Clean:{} Freed {}{} ({}% -> {}%) in {:.1?}\n\n",
-            COLOR_GREEN,
-            COLOR_RESET,
-            format_bytes(rep.bytes_freed),
-            COLOR_RESET,
-            rep.mem_before.percent_physical,
-            rep.mem_after.percent_physical,
-            rep.duration
-        ));
-    } else {
-        out.push_str("  Ready to clean memory.\n\n");
-    }
-
-    // Action buttons / shortcuts footer
     out.push_str(&format!(
-        "  {}[SPACE / C] Clean Memory   [F] Full Clean   [Q] Quit{}\n",
+        "  Auto-clean: {} [A/T]  |  Interval: {} [I]\n",
+        auto_status, int_status
+    ));
+
+    // Shortcuts footer
+    out.push_str(&format!(
+        "  {}[SPACE/C] Clean   [F] Full Clean   [1-8] Toggle Areas   [Q] Exit{}\n",
         COLOR_BOLD, COLOR_RESET
     ));
 
