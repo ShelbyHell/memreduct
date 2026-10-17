@@ -1,6 +1,8 @@
 mod cleaner;
 mod config;
+mod gui;
 mod system;
+mod tui;
 mod ui;
 
 use cleaner::{
@@ -23,6 +25,8 @@ fn print_help() {
     println!("Usage: memreduct [OPTIONS]");
     println!();
     println!("Options:");
+    println!("  --ui, --tui            Launch interactive terminal user interface (TUI)");
+    println!("  -g, --gui              Launch graphical user interface (Windows desktop window)");
     println!("  -clean                 Clean default memory regions");
     println!("  -clean:full, --full    Clean all memory regions (including standby & modified)");
     println!("  -s, --status           Show current memory statistics and exit");
@@ -37,10 +41,11 @@ fn print_help() {
     println!("  -v, --version          Show version information");
     println!();
     println!("Examples:");
-    println!("  memreduct -clean");
-    println!("  memreduct --full");
+    println!("  memreduct              # Opens interactive UI (GUI on Windows, TUI on Linux)");
+    println!("  memreduct --ui         # Opens interactive TUI dashboard");
+    println!("  memreduct -clean       # Quick clean without UI");
+    println!("  memreduct --full       # Full clean without UI");
     println!("  memreduct --auto --limit 85 --interval 1800");
-    println!("  memreduct --monitor");
 }
 
 fn print_version() {
@@ -49,6 +54,8 @@ fn print_version() {
 }
 
 enum RunMode {
+    Gui,
+    Tui,
     Clean(u32),
     Status,
     Monitor,
@@ -61,8 +68,11 @@ fn parse_cli_args() -> Result<RunMode, String> {
     let args: Vec<String> = env::args().skip(1).collect();
 
     if args.is_empty() {
-        // By default, if no args provided, show status or monitor
-        return Ok(RunMode::Status);
+        #[cfg(target_os = "windows")]
+        return Ok(RunMode::Gui);
+
+        #[cfg(not(target_os = "windows"))]
+        return Ok(RunMode::Tui);
     }
 
     let mut clean_mask: Option<u32> = None;
@@ -77,6 +87,12 @@ fn parse_cli_args() -> Result<RunMode, String> {
         let arg = &args[i];
 
         match arg.as_str() {
+            "-g" | "--gui" => {
+                return Ok(RunMode::Gui);
+            }
+            "-u" | "--ui" | "--tui" => {
+                return Ok(RunMode::Tui);
+            }
             "-clean" | "--clean" => {
                 clean_mask = Some(clean_mask.unwrap_or(0) | REDUCT_MASK_DEFAULT);
             }
@@ -372,6 +388,16 @@ fn main() {
     let _ = ctrlc_setup(r);
 
     match mode {
+        RunMode::Gui => {
+            if let Err(e) = gui::run_gui() {
+                eprintln!("{}GUI error: {}{}", ui::COLOR_RED, e, ui::COLOR_RESET);
+                println!("Falling back to interactive TUI...");
+                tui::run_interactive_tui(running);
+            }
+        }
+        RunMode::Tui => {
+            tui::run_interactive_tui(running);
+        }
         RunMode::Help => {
             print_help();
         }

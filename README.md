@@ -18,6 +18,9 @@ Administrator / root privileges are required for memory reduction operations.
 ### Features:
 - **Fast & Safe**: Zero external dependencies, pure Rust implementation.
 - **Cross-platform**: Full support for both Windows and Linux.
+- **Interactive UI & Windows Desktop GUI**:
+  - **Native Windows GUI**: Authentic compact window with progress bars, clean button, and system tray icon.
+  - **Terminal User Interface (TUI)**: Interactive full-terminal dashboard with live color gauges, interactive memory region checkboxes (1-8), threshold toggling (A/T/I), and hotkeys (Space/C to clean, F for full clean, Q to quit).
 - **Multiple Memory Regions**:
   - Process Working Sets (`REDUCT_WORKINGSET`)
   - System File Cache (`REDUCT_SYSTEMFILECACHE`)
@@ -29,7 +32,7 @@ Administrator / root privileges are required for memory reduction operations.
   - Volume Cache Flush (`REDUCT_MODIFIEDFILECACHE`)
 - **CLI & Automation**:
   - Fast one-shot cleaning (`-clean`, `--full`, `--regions ...`)
-  - Live terminal monitoring dashboard (`--monitor`)
+  - Live terminal monitoring dashboard (`--monitor` / `--ui`)
   - Background daemon with auto-clean threshold (`--auto --limit 85 --interval 1800`)
   - Memory statistics reporting (`--status`)
   - Configuration support via `memreduct.toml` or `memreduct.ini`
@@ -46,6 +49,8 @@ The compiled binary will be placed at `target/release/memreduct` (or `memreduct.
 Usage: memreduct [OPTIONS]
 
 Options:
+  --ui, --tui            Launch interactive terminal user interface (TUI)
+  -g, --gui              Launch graphical user interface (Windows desktop window)
   -clean                 Clean default memory regions
   -clean:full, --full    Clean all memory regions (including standby & modified)
   -s, --status           Show current memory statistics and exit
@@ -62,14 +67,17 @@ Options:
 
 ### Examples:
 ```bash
-# Clean default regions (Run with sudo / Administrator)
+# Launch interactive UI (GUI on Windows, TUI on Linux)
+memreduct
+
+# Launch interactive terminal UI dashboard
+memreduct --ui
+
+# Clean default regions directly from CLI (Run with sudo / Administrator)
 sudo memreduct -clean
 
 # Clean all memory regions
 sudo memreduct --full
-
-# Live terminal monitor
-memreduct --monitor
 
 # Run auto-clean daemon when memory usage exceeds 85% or every 30 minutes
 sudo memreduct --auto --limit 85 --interval 1800
