@@ -1,50 +1,81 @@
-<h1 align="center">Mem Reduct</h1>
+<h1 align="center">Mem Reduct (Rust)</h1>
 
 <p align="center">
-	<a href="https://github.com/henrypp/memreduct/releases"><img src="https://img.shields.io/github/v/release/henrypp/memreduct?style=flat-square&include_prereleases&label=version" /></a>
-	<a href="https://github.com/henrypp/memreduct/releases"><img src="https://img.shields.io/github/downloads/henrypp/memreduct/total.svg?style=flat-square" /></a>
-	<a href="https://github.com/henrypp/memreduct/issues"><img src="https://img.shields.io/github/issues-raw/henrypp/memreduct.svg?style=flat-square&label=issues" /></a>
-	<a href="https://github.com/henrypp/memreduct/graphs/contributors"><img src="https://img.shields.io/github/contributors/henrypp/memreduct?style=flat-square" /></a>
 	<a href="https://github.com/henrypp/memreduct/blob/master/LICENSE"><img src="https://img.shields.io/github/license/henrypp/memreduct?style=flat-square" /></a>
+	<img src="https://img.shields.io/badge/language-Rust-orange.svg?style=flat-square" />
+	<img src="https://img.shields.io/badge/platform-Windows%20%7C%20Linux-blue.svg?style=flat-square" />
 </p>
 
 -------
 
-<p align="center">
-	<img src="/images/memreduct.png?cachefix" />
-</p>
-
 ### Description:
-Lightweight real-time memory management application to monitor
-and clean system memory on your computer.
+Lightweight, high-performance real-time memory management application written in **Rust** to monitor and clean system memory.
 
-The program used undocumented internal system features (Native API) to clear system cache (system working set, working set, standby page lists, modified page lists) with variable result ~10-50%. Application it is compatible with <s>Windows XP SP3</s> Windows 7 SP1 and higher operating systems.
+On Windows, the program uses undocumented internal system features (Native NT API) to clear system cache, working sets, standby page lists, and modified page lists (~10-50% memory reduction). On Linux, it interfaces with kernel cache dropping (`drop_caches`), compaction (`compact_memory`), and page cache flush (`sync`).
 
-You can download either the installer or portable version. For correct working you are require administrator rights.
+Administrator / root privileges are required for memory reduction operations.
 
+### Features:
+- **Fast & Safe**: Zero external dependencies, pure Rust implementation.
+- **Cross-platform**: Full support for both Windows and Linux.
+- **Multiple Memory Regions**:
+  - Process Working Sets (`REDUCT_WORKINGSET`)
+  - System File Cache (`REDUCT_SYSTEMFILECACHE`)
+  - Standby List Priority-0 (`REDUCT_STANDBYPRIORITY0LIST`)
+  - Standby List Full (`REDUCT_STANDBYLIST`)
+  - Modified Page List (`REDUCT_MODIFIEDLIST`)
+  - Registry Cache (`REDUCT_REGISTRYCACHE`)
+  - Combine Memory Lists (`REDUCT_COMBINEMEMORYLISTS`)
+  - Volume Cache Flush (`REDUCT_MODIFIEDFILECACHE`)
+- **CLI & Automation**:
+  - Fast one-shot cleaning (`-clean`, `--full`, `--regions ...`)
+  - Live terminal monitoring dashboard (`--monitor`)
+  - Background daemon with auto-clean threshold (`--auto --limit 85 --interval 1800`)
+  - Memory statistics reporting (`--status`)
+  - Configuration support via `memreduct.toml` or `memreduct.ini`
+
+### Build:
+Ensure you have the Rust toolchain installed:
+```bash
+cargo build --release
 ```
-To activate portable mode, create "memreduct.ini" in application folder, or move it from "%APPDATA%\Henry++\Mem Reduct".
+The compiled binary will be placed at `target/release/memreduct` (or `memreduct.exe` on Windows).
+
+### Usage:
+```
+Usage: memreduct [OPTIONS]
+
+Options:
+  -clean                 Clean default memory regions
+  -clean:full, --full    Clean all memory regions (including standby & modified)
+  -s, --status           Show current memory statistics and exit
+  -m, --monitor          Run live memory monitor in terminal
+  -a, --auto             Run auto-clean daemon
+      --limit <pct>      Set memory usage threshold for auto-clean (e.g. 90)
+      --interval <sec>   Set periodic auto-clean interval in seconds
+      --regions <list>   Comma-separated regions to clean:
+                         workingset, cache, standbyprio0, standby,
+                         modified, combine, registry, volumecache
+  -h, --help             Show this help message
+  -v, --version          Show version information
 ```
 
-### System requirements:
-- Windows 7, 8, 8.1, 10, 11 (64-bit/ARM64)
-- An SSE2-capable CPU
-- <s>KB2533623</s> [KB3063858](https://www.microsoft.com/en-us/download/details.aspx?id=47442) update for Windows 7 was required
+### Examples:
+```bash
+# Clean default regions (Run with sudo / Administrator)
+sudo memreduct -clean
 
-### Donate:
-- [Bitcoin](https://www.blockchain.com/btc/address/1LrRTXPsvHcQWCNZotA9RcwjsGcRghG96c) (BTC)
-- [Ethereum](https://www.blockchain.com/explorer/addresses/eth/0xe2C84A62eb2a4EF154b19bec0c1c106734B95960) (ETH)
-- [Yandex Money](https://yoomoney.ru/to/4100115776040583) (RUB)
-- [Paypal](https://paypal.me/henrypp) (USD)
+# Clean all memory regions
+sudo memreduct --full
 
-### GPG Signature:
-Binaries have GPG signature `memreduct.exe.sig` in application folder.
+# Live terminal monitor
+memreduct --monitor
 
-- Public key: [pubkey.asc](https://raw.githubusercontent.com/henrypp/builder/master/pubkey.asc) ([pgpkeys.eu](https://pgpkeys.eu/pks/lookup?op=index&fingerprint=on&search=0x5635B5FD))
-- Key ID: 0x5635B5FD
-- Fingerprint: D985 2361 1524 AB29 BE73 30AC 2881 20A7 5635 B5FD
+# Run auto-clean daemon when memory usage exceeds 85% or every 30 minutes
+sudo memreduct --auto --limit 85 --interval 1800
+```
+
 ---
 - Website: [github.com/henrypp](https://github.com/henrypp)
-- Support: sforce5@mail.ru
----
-(c) 2011-2026 Henry++
+- Original author: Henry++
+- Ported to Rust (c) 2011-2026

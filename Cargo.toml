@@ -1,0 +1,20 @@
+[package]
+name = "memreduct"
+version = "3.5.3"
+edition = "2021"
+authors = ["Henry++", "Rust Port contributors"]
+description = "Lightweight real-time memory management application to monitor and clean system memory"
+license = "GPL-3.0-or-later"
+repository = "https://github.com/henrypp/memreduct"
+readme = "README.md"
+keywords = ["memory", "ram", "cleaner", "system", "performance"]
+categories = ["command-line-utilities", "os"]
+
+[dependencies]
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

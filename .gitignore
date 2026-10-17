@@ -1,5 +1,6 @@
 .vs/
 .vscode/
+target/
 temp/
 packages/
 bin/32/
