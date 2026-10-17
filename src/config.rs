@@ -18,6 +18,8 @@ pub struct Config {
     pub balloon_notifications: bool,
     pub notification_sound: bool,
     pub hotkey_enable: bool,
+    pub hotkey_modifiers: u32,
+    pub hotkey_vk: u32,
     pub allow_standby_cleanup: bool,
     pub warning_level: u8,
     pub danger_level: u8,
@@ -40,6 +42,8 @@ impl Default for Config {
             balloon_notifications: true,
             notification_sound: true,
             hotkey_enable: true,
+            hotkey_modifiers: 0x0002, // MOD_CONTROL
+            hotkey_vk: 0x70,          // VK_F1
             allow_standby_cleanup: false,
             warning_level: 70,
             danger_level: 90,
@@ -86,6 +90,8 @@ impl Config {
             balloon_notifications = {}\n\
             notification_sound = {}\n\
             hotkey_enable = {}\n\
+            hotkey_modifiers = {}\n\
+            hotkey_vk = {}\n\
             allow_standby_cleanup = {}\n\n\
             [auto_clean]\n\
             autoreduct_enable = {}\n\
@@ -105,6 +111,8 @@ impl Config {
             self.balloon_notifications,
             self.notification_sound,
             self.hotkey_enable,
+            self.hotkey_modifiers,
+            self.hotkey_vk,
             self.allow_standby_cleanup,
             self.autoreduct_enable,
             self.autoreduct_limit,
@@ -153,6 +161,16 @@ impl Config {
                 }
                 "hotkeycleanenable" | "hotkey_enable" | "hotkey" => {
                     self.hotkey_enable = val.eq_ignore_ascii_case("true") || val == "1";
+                }
+                "hotkey_modifiers" | "hotkeymodifiers" | "hotkey_mods" => {
+                    if let Ok(v) = val.parse::<u32>() {
+                        self.hotkey_modifiers = v;
+                    }
+                }
+                "hotkey_vk" | "hotkeyvk" | "hotkey_key" => {
+                    if let Ok(v) = val.parse::<u32>() {
+                        self.hotkey_vk = v;
+                    }
                 }
                 "isallowstandbylistcleanup" | "allow_standby_cleanup" => {
                     self.allow_standby_cleanup = val.eq_ignore_ascii_case("true") || val == "1";
@@ -203,6 +221,63 @@ impl Config {
             }
         }
     }
+}
+
+#[allow(dead_code)]
+pub fn format_hotkey(modifiers: u32, vk: u32) -> String {
+    let mut parts = Vec::new();
+    // MOD_CONTROL = 0x0002, MOD_ALT = 0x0001, MOD_SHIFT = 0x0004, MOD_WIN = 0x0008
+    if (modifiers & 0x0002) != 0 {
+        parts.push("Ctrl");
+    }
+    if (modifiers & 0x0001) != 0 {
+        parts.push("Alt");
+    }
+    if (modifiers & 0x0004) != 0 {
+        parts.push("Shift");
+    }
+    if (modifiers & 0x0008) != 0 {
+        parts.push("Win");
+    }
+
+    let key_name = match vk {
+        0x70..=0x87 => format!("F{}", vk - 0x70 + 1), // F1 to F24
+        0x30..=0x39 => format!("{}", (vk as u8) as char), // 0-9
+        0x41..=0x5A => format!("{}", (vk as u8) as char), // A-Z
+        0x20 => "Space".to_string(),
+        0x08 => "Backspace".to_string(),
+        0x09 => "Tab".to_string(),
+        0x0D => "Enter".to_string(),
+        0x1B => "Esc".to_string(),
+        0x21 => "PageUp".to_string(),
+        0x22 => "PageDown".to_string(),
+        0x23 => "End".to_string(),
+        0x24 => "Home".to_string(),
+        0x25 => "Left".to_string(),
+        0x26 => "Up".to_string(),
+        0x27 => "Right".to_string(),
+        0x28 => "Down".to_string(),
+        0x2D => "Insert".to_string(),
+        0x2E => "Delete".to_string(),
+        0x60..=0x69 => format!("Num {}", vk - 0x60),
+        0x6A => "Num *".to_string(),
+        0x6B => "Num +".to_string(),
+        0x6D => "Num -".to_string(),
+        0x6E => "Num .".to_string(),
+        0x6F => "Num /".to_string(),
+        0xBC => ",".to_string(),
+        0xBD => "-".to_string(),
+        0xBE => ".".to_string(),
+        0xBF => "/".to_string(),
+        0xC0 => "`".to_string(),
+        0xDB => "[".to_string(),
+        0xDC => "\\".to_string(),
+        0xDD => "]".to_string(),
+        0xDE => "'".to_string(),
+        _ => format!("Key(0x{:X})", vk),
+    };
+    parts.push(&key_name);
+    parts.join(" + ")
 }
 
 #[cfg(target_os = "windows")]
@@ -320,6 +395,8 @@ mod tests {
             cooldown = 15
             dark_theme = true
             always_on_top = true
+            hotkey_modifiers = 3
+            hotkey_vk = 112
         "#;
         let mut cfg = Config::default();
         cfg.parse_content(content);
@@ -331,5 +408,15 @@ mod tests {
         assert_eq!(cfg.cooldown_seconds, 15);
         assert!(cfg.dark_theme);
         assert!(cfg.always_on_top);
+        assert_eq!(cfg.hotkey_modifiers, 3);
+        assert_eq!(cfg.hotkey_vk, 112);
+    }
+
+    #[test]
+    fn test_format_hotkey() {
+        assert_eq!(format_hotkey(0x0002, 0x70), "Ctrl + F1");
+        assert_eq!(format_hotkey(0x0001 | 0x0002, 0x52), "Ctrl + Alt + R");
+        assert_eq!(format_hotkey(0x0004 | 0x0008, 0x20), "Shift + Win + Space");
+        assert_eq!(format_hotkey(0, 0x74), "F5");
     }
 }

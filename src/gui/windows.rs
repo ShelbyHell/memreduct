@@ -5,7 +5,7 @@ use crate::cleaner::{
     REDUCT_MODIFIEDFILECACHE, REDUCT_MODIFIEDLIST, REDUCT_REGISTRYCACHE, REDUCT_STANDBYLIST,
     REDUCT_STANDBYPRIORITY0LIST, REDUCT_SYSTEMFILECACHE, REDUCT_WORKINGSET,
 };
-use crate::config::Config;
+use crate::config::{Config, format_hotkey};
 use crate::system::{format_bytes, get_memory_info};
 use std::mem::size_of;
 use std::ptr;
@@ -42,6 +42,8 @@ const WM_CLOSE: u32 = 0x0010;
 const WM_ERASEBKGND: u32 = 0x0014;
 const WM_NCCREATE: u32 = 0x0081;
 const WM_NCLBUTTONDOWN: u32 = 0x00A1;
+const WM_KEYDOWN: u32 = 0x0100;
+const WM_SYSKEYDOWN: u32 = 0x0104;
 const WM_COMMAND: u32 = 0x0111;
 const WM_SYSCOMMAND: u32 = 0x0112;
 const WM_TIMER: u32 = 0x0113;
@@ -60,7 +62,10 @@ const SC_MINIMIZE: usize = 0xF020;
 const HTCAPTION: isize = 2;
 
 const ID_HOTKEY_CLEAN: i32 = 1337;
+const MOD_ALT: u32 = 0x0001;
 const MOD_CONTROL: u32 = 0x0002;
+const MOD_SHIFT: u32 = 0x0004;
+const MOD_WIN: u32 = 0x0008;
 const MOD_NOREPEAT: u32 = 0x4000;
 const VK_F1: u32 = 0x70;
 
@@ -299,6 +304,7 @@ extern "system" {
     fn UnregisterHotKey(hWnd: HWND, id: i32) -> i32;
     fn MessageBeep(uType: u32) -> i32;
     fn DestroyMenu(hMenu: HMENU) -> i32;
+    fn GetKeyState(nVirtKey: i32) -> i16;
 }
 
 #[link(name = "gdi32")]
@@ -361,6 +367,7 @@ static mut LAST_CLEAN_STATUS: Option<String> = None;
 static mut IS_MOUSE_TRACKED: bool = false;
 static mut CURRENT_TRAY_ICON: HICON = ptr::null_mut();
 static IS_CLEANING: AtomicBool = AtomicBool::new(false);
+static mut IS_RECORDING_HOTKEY: bool = false;
 
 // Fonts
 static mut FONT_HERO: HFONT = ptr::null_mut();
@@ -377,6 +384,7 @@ enum ClickTarget {
     BtnMinimize,
     BtnClose,
     CleanButton,
+    HotkeyBanner,
     Chip(u32),
     // Settings toggles
     SettingAlwaysOnTop,
@@ -385,6 +393,8 @@ enum ClickTarget {
     SettingBalloonNotifications,
     SettingNotificationSound,
     SettingHotkey,
+    SettingHotkeyRecord,
+    SettingHotkeyReset,
     SettingAutoToggle,
     SettingLimit(u8),
     SettingIntervalToggle,
@@ -395,9 +405,9 @@ enum ClickTarget {
 
 unsafe fn create_fonts() {
     let font_name = to_wide("Segoe UI");
-    FONT_HERO = CreateFontW(32, 0, 0, 0, 700, 0, 0, 0, 1, 0, 0, 5, 0, font_name.as_ptr());
+    FONT_HERO = CreateFontW(34, 0, 0, 0, 700, 0, 0, 0, 1, 0, 0, 5, 0, font_name.as_ptr());
     FONT_TITLE = CreateFontW(17, 0, 0, 0, 700, 0, 0, 0, 1, 0, 0, 5, 0, font_name.as_ptr());
-    FONT_SUBTITLE = CreateFontW(14, 0, 0, 0, 600, 0, 0, 0, 1, 0, 0, 5, 0, font_name.as_ptr());
+    FONT_SUBTITLE = CreateFontW(13, 0, 0, 0, 600, 0, 0, 0, 1, 0, 0, 5, 0, font_name.as_ptr());
     FONT_BODY = CreateFontW(13, 0, 0, 0, 400, 0, 0, 0, 1, 0, 0, 5, 0, font_name.as_ptr());
     FONT_BTN = CreateFontW(14, 0, 0, 0, 700, 0, 0, 0, 1, 0, 0, 5, 0, font_name.as_ptr());
     FONT_SMALL = CreateFontW(11, 0, 0, 0, 400, 0, 0, 0, 1, 0, 0, 5, 0, font_name.as_ptr());
@@ -497,55 +507,70 @@ unsafe fn render_modern_gui(hdc: HDC, w: i32, h: i32, config: &Config) {
 
     // 2. Header Bar
     // Logo and App Name
-    draw_string(hdc, "⚡ Mem Reduct", FONT_TITLE, rgb(255, 255, 255), 14, 12, 105, 24, DT_LEFT | DT_VCENTER);
-    // Version Badge
-    draw_rounded_card(hdc, 122, 15, 42, 18, 8, rgb(30, 33, 44), rgb(45, 50, 68));
-    draw_string(hdc, "v3.5.3", FONT_SMALL, rgb(148, 163, 184), 122, 15, 42, 18, DT_CENTER | DT_VCENTER);
+    draw_string(hdc, "⚡ Mem Reduct", FONT_TITLE, rgb(255, 255, 255), 14, 12, 110, 24, DT_LEFT | DT_VCENTER);
 
-    // Navigation Tabs: [ Monitor ]  [ Settings ]
-    let tab_ov_bg = if ACTIVE_TAB == ActiveTab::Overview {
-        rgb(99, 102, 241)
-    } else if HOVER_TARGET == Some(ClickTarget::TabOverview) {
-        rgb(38, 42, 56)
-    } else {
-        rgb(24, 27, 36)
-    };
-    let tab_ov_text = if ACTIVE_TAB == ActiveTab::Overview { rgb(255, 255, 255) } else { rgb(160, 170, 190) };
-    draw_rounded_card(hdc, 170, 12, 62, 24, 12, tab_ov_bg, rgb(45, 50, 68));
-    draw_string(hdc, "Monitor", FONT_SUBTITLE, tab_ov_text, 170, 12, 62, 24, DT_CENTER | DT_VCENTER);
+    // Segmented Navigation Tabs: [ Monitor ]  [ Settings ]
+    let seg_w = 176;
+    let seg_h = 28;
+    let seg_x = (w - seg_w) / 2;
+    let seg_y = 10;
+    draw_rounded_card(hdc, seg_x, seg_y, seg_w, seg_h, 8, rgb(22, 25, 34), rgb(38, 43, 58));
 
-    let tab_st_bg = if ACTIVE_TAB == ActiveTab::Settings {
+    let tab1_w = 84;
+    let tab1_x = seg_x + 2;
+    let tab2_x = seg_x + 88;
+    let tab_h = 24;
+    let tab_y = seg_y + 2;
+
+    // Tab 1: Monitor
+    let tab1_active = ACTIVE_TAB == ActiveTab::Overview;
+    let tab1_hover = HOVER_TARGET == Some(ClickTarget::TabOverview);
+    let tab1_bg = if tab1_active {
         rgb(99, 102, 241)
-    } else if HOVER_TARGET == Some(ClickTarget::TabSettings) {
-        rgb(38, 42, 56)
+    } else if tab1_hover {
+        rgb(34, 38, 52)
     } else {
-        rgb(24, 27, 36)
+        rgb(22, 25, 34)
     };
-    let tab_st_text = if ACTIVE_TAB == ActiveTab::Settings { rgb(255, 255, 255) } else { rgb(160, 170, 190) };
-    draw_rounded_card(hdc, 238, 12, 64, 24, 12, tab_st_bg, rgb(45, 50, 68));
-    draw_string(hdc, "Settings", FONT_SUBTITLE, tab_st_text, 238, 12, 64, 24, DT_CENTER | DT_VCENTER);
+    let tab1_tc = if tab1_active { rgb(255, 255, 255) } else { rgb(148, 163, 184) };
+    draw_rounded_card(hdc, tab1_x, tab_y, tab1_w, tab_h, 6, tab1_bg, tab1_bg);
+    draw_string(hdc, "Monitor", FONT_SUBTITLE, tab1_tc, tab1_x, tab_y, tab1_w, tab_h, DT_CENTER | DT_VCENTER);
+
+    // Tab 2: Settings
+    let tab2_active = ACTIVE_TAB == ActiveTab::Settings;
+    let tab2_hover = HOVER_TARGET == Some(ClickTarget::TabSettings);
+    let tab2_bg = if tab2_active {
+        rgb(99, 102, 241)
+    } else if tab2_hover {
+        rgb(34, 38, 52)
+    } else {
+        rgb(22, 25, 34)
+    };
+    let tab2_tc = if tab2_active { rgb(255, 255, 255) } else { rgb(148, 163, 184) };
+    draw_rounded_card(hdc, tab2_x, tab_y, tab1_w, tab_h, 6, tab2_bg, tab2_bg);
+    draw_string(hdc, "Settings", FONT_SUBTITLE, tab2_tc, tab2_x, tab_y, tab1_w, tab_h, DT_CENTER | DT_VCENTER);
 
     // Window Control Buttons: [ ─ ]  [ ✕ ]
     let is_min_hover = HOVER_TARGET == Some(ClickTarget::BtnMinimize);
     let min_bg = if is_min_hover { rgb(38, 42, 56) } else { rgb(24, 27, 36) };
     let min_border = if is_min_hover { rgb(99, 102, 241) } else { rgb(45, 50, 68) };
     let min_text = if is_min_hover { rgb(255, 255, 255) } else { rgb(160, 170, 190) };
-    draw_rounded_card(hdc, w - 64, 12, 26, 24, 8, min_bg, min_border);
-    draw_string(hdc, "─", FONT_SUBTITLE, min_text, w - 64, 11, 26, 24, DT_CENTER | DT_VCENTER);
+    draw_rounded_card(hdc, w - 66, 11, 26, 26, 8, min_bg, min_border);
+    draw_string(hdc, "─", FONT_SUBTITLE, min_text, w - 66, 11, 26, 26, DT_CENTER | DT_VCENTER);
 
     let is_cls_hover = HOVER_TARGET == Some(ClickTarget::BtnClose);
     let cls_bg = if is_cls_hover { rgb(220, 38, 38) } else { rgb(24, 27, 36) };
     let cls_border = if is_cls_hover { rgb(239, 68, 68) } else { rgb(45, 50, 68) };
     let cls_text = if is_cls_hover { rgb(255, 255, 255) } else { rgb(160, 170, 190) };
-    draw_rounded_card(hdc, w - 34, 12, 26, 24, 8, cls_bg, cls_border);
-    draw_string(hdc, "✕", FONT_SUBTITLE, cls_text, w - 34, 12, 26, 24, DT_CENTER | DT_VCENTER);
+    draw_rounded_card(hdc, w - 36, 11, 26, 26, 8, cls_bg, cls_border);
+    draw_string(hdc, "✕", FONT_SUBTITLE, cls_text, w - 36, 11, 26, 26, DT_CENTER | DT_VCENTER);
 
     // Divider
     draw_rect_solid(hdc, 14, 46, w - 28, 1, rgb(30, 34, 46));
 
     match ACTIVE_TAB {
         ActiveTab::Overview => {
-            render_tab_overview(hdc, w, h);
+            render_tab_overview(hdc, w, h, config);
         }
         ActiveTab::Settings => {
             render_tab_settings(hdc, w, h, config);
@@ -553,7 +578,7 @@ unsafe fn render_modern_gui(hdc: HDC, w: i32, h: i32, config: &Config) {
     }
 }
 
-unsafe fn render_tab_overview(hdc: HDC, w: i32, _h: i32) {
+unsafe fn render_tab_overview(hdc: HDC, w: i32, _h: i32, config: &Config) {
     let info = get_memory_info().unwrap_or_default();
 
     // 1. Hero Card: Physical RAM
@@ -566,11 +591,11 @@ unsafe fn render_tab_overview(hdc: HDC, w: i32, _h: i32) {
     draw_string(hdc, "PHYSICAL MEMORY", FONT_SMALL, rgb(148, 163, 184), card_x + 16, card_y + 12, 160, 16, DT_LEFT);
 
     let p_color = if info.percent_physical >= 90 {
-        rgb(239, 68, 68)
+        rgb(244, 63, 94) // Red / Danger
     } else if info.percent_physical >= 70 {
-        rgb(245, 158, 11)
+        rgb(251, 191, 36) // Amber / Warning
     } else {
-        rgb(16, 185, 129)
+        rgb(52, 211, 153) // Mint Green / Optimal
     };
 
     draw_string(
@@ -580,10 +605,21 @@ unsafe fn render_tab_overview(hdc: HDC, w: i32, _h: i32) {
         p_color,
         card_x + 16,
         card_y + 30,
-        140,
-        36,
+        100,
+        42,
         DT_LEFT | DT_VCENTER,
     );
+
+    // Status Badge
+    let (badge_txt, badge_bg, badge_tc) = if info.percent_physical >= 90 {
+        ("CRITICAL", rgb(60, 20, 25), rgb(244, 63, 94))
+    } else if info.percent_physical >= 70 {
+        ("ELEVATED", rgb(55, 40, 15), rgb(251, 191, 36))
+    } else {
+        ("OPTIMAL", rgb(18, 50, 36), rgb(52, 211, 153))
+    };
+    draw_rounded_card(hdc, card_x + 118, card_y + 40, 68, 20, 6, badge_bg, badge_bg);
+    draw_string(hdc, badge_txt, FONT_SMALL, badge_tc, card_x + 118, card_y + 40, 68, 20, DT_CENTER | DT_VCENTER);
 
     let stats_text = format!(
         "Used: {}\nFree: {}\nTotal: {}",
@@ -597,16 +633,16 @@ unsafe fn render_tab_overview(hdc: HDC, w: i32, _h: i32) {
         FONT_SMALL,
         rgb(203, 213, 225),
         card_x + card_w - 140,
-        card_y + 24,
+        card_y + 20,
         125,
-        45,
+        50,
         DT_RIGHT,
     );
 
     draw_pill_gauge(
         hdc,
         card_x + 16,
-        card_y + 82,
+        card_y + 84,
         card_w - 32,
         10,
         info.percent_physical,
@@ -617,7 +653,7 @@ unsafe fn render_tab_overview(hdc: HDC, w: i32, _h: i32) {
     // 2. Dual Sub-cards: Pagefile and Cache
     let sub_y = 176;
     let sub_w = (card_w - 10) / 2;
-    let sub_h = 76;
+    let sub_h = 78;
 
     // Left Card: Pagefile / Swap
     draw_rounded_card(hdc, card_x, sub_y, sub_w, sub_h, 12, rgb(24, 27, 36), rgb(38, 43, 58));
@@ -629,7 +665,7 @@ unsafe fn render_tab_overview(hdc: HDC, w: i32, _h: i32) {
         FONT_TITLE,
         pf_color,
         card_x + 12,
-        sub_y + 24,
+        sub_y + 26,
         60,
         22,
         DT_LEFT,
@@ -640,7 +676,7 @@ unsafe fn render_tab_overview(hdc: HDC, w: i32, _h: i32) {
         FONT_SMALL,
         rgb(203, 213, 225),
         card_x + 12,
-        sub_y + 46,
+        sub_y + 50,
         sub_w - 24,
         14,
         DT_LEFT,
@@ -648,7 +684,7 @@ unsafe fn render_tab_overview(hdc: HDC, w: i32, _h: i32) {
 
     // Right Card: System Cache
     draw_rounded_card(hdc, card_x + sub_w + 10, sub_y, sub_w, sub_h, 12, rgb(24, 27, 36), rgb(38, 43, 58));
-    draw_string(hdc, "SYSTEM CACHE", FONT_SMALL, rgb(148, 163, 184), card_x + sub_w + 22, sub_y + 8, sub_w - 24, 14, DT_LEFT);
+    draw_string(hdc, "STANDBY & CACHE", FONT_SMALL, rgb(148, 163, 184), card_x + sub_w + 22, sub_y + 8, sub_w - 24, 14, DT_LEFT);
     let cached_str = info.cached.map(format_bytes).unwrap_or_else(|| "N/A".into());
     draw_string(
         hdc,
@@ -656,7 +692,7 @@ unsafe fn render_tab_overview(hdc: HDC, w: i32, _h: i32) {
         FONT_TITLE,
         rgb(168, 85, 247),
         card_x + sub_w + 22,
-        sub_y + 24,
+        sub_y + 26,
         sub_w - 24,
         22,
         DT_LEFT,
@@ -668,14 +704,14 @@ unsafe fn render_tab_overview(hdc: HDC, w: i32, _h: i32) {
         FONT_SMALL,
         rgb(203, 213, 225),
         card_x + sub_w + 22,
-        sub_y + 46,
+        sub_y + 50,
         sub_w - 24,
         14,
         DT_LEFT,
     );
 
     // 3. Areas to Clean Chips Grid
-    let chips_y = 262;
+    let chips_y = 264;
     draw_string(hdc, "AREAS TO REDUCE (CLICK TO TOGGLE)", FONT_SMALL, rgb(148, 163, 184), card_x, chips_y, card_w, 14, DT_LEFT);
 
     let regions = [
@@ -690,13 +726,13 @@ unsafe fn render_tab_overview(hdc: HDC, w: i32, _h: i32) {
     ];
 
     let chip_w = (card_w - 8) / 2;
-    let chip_h = 24;
+    let chip_h = 26;
 
     for (idx, (bit, label)) in regions.iter().enumerate() {
         let col = idx % 2;
         let row = idx / 2;
         let cx = card_x + col as i32 * (chip_w + 8);
-        let cy = chips_y + 20 + row as i32 * (chip_h + 6);
+        let cy = chips_y + 20 + row as i32 * (chip_h + 4);
 
         let is_active = (CURRENT_MASK & *bit) != 0;
         let is_hovered = HOVER_TARGET == Some(ClickTarget::Chip(*bit));
@@ -712,14 +748,14 @@ unsafe fn render_tab_overview(hdc: HDC, w: i32, _h: i32) {
 
         draw_rounded_card(hdc, cx, cy, chip_w, chip_h, 8, bg, border);
 
-        let mark = if is_active { "✓ " } else { "   " };
+        let mark = if is_active { "✓ " } else { "○ " };
         let chip_text = format!("{}{}", mark, label);
         draw_string(hdc, &chip_text, FONT_SMALL, text_color, cx + 8, cy, chip_w - 16, chip_h, DT_LEFT | DT_VCENTER);
     }
 
     // 4. Main Action Button: ⚡ CLEAN MEMORY NOW
-    let btn_y = 398;
-    let btn_h = 44;
+    let btn_y = 402;
+    let btn_h = 46;
     let is_cleaning = IS_CLEANING.load(Ordering::SeqCst);
     let btn_bg = if is_cleaning {
         rgb(79, 70, 229)
@@ -748,7 +784,7 @@ unsafe fn render_tab_overview(hdc: HDC, w: i32, _h: i32) {
     );
 
     // 5. Result Status Banner
-    let status_y = 452;
+    let status_y = 458;
     let status_h = 28;
     if let Some(msg) = &LAST_CLEAN_STATUS {
         draw_rounded_card(hdc, card_x, status_y, card_w, status_h, 8, rgb(18, 36, 28), rgb(34, 76, 52));
@@ -758,34 +794,119 @@ unsafe fn render_tab_overview(hdc: HDC, w: i32, _h: i32) {
         draw_string(hdc, "Ready to optimize system memory", FONT_SMALL, rgb(148, 163, 184), card_x, status_y, card_w, status_h, DT_CENTER | DT_VCENTER);
     }
 
-    // 6. Hotkey Hint Banner
-    let hint_y = 488;
-    draw_rounded_card(hdc, card_x, hint_y, card_w, 24, 6, rgb(20, 24, 34), rgb(32, 38, 54));
-    draw_string(hdc, "⌨  Global Hotkey: Ctrl + F1 to clean memory anytime", FONT_SMALL, rgb(148, 163, 184), card_x, hint_y, card_w, 24, DT_CENTER | DT_VCENTER);
+    // 6. Hotkey Quick Indicator Banner
+    let hint_y = 496;
+    let hint_h = 28;
+    let is_hk_hover = HOVER_TARGET == Some(ClickTarget::HotkeyBanner);
+    let (hk_bg, hk_border, hk_tc) = if is_hk_hover {
+        (rgb(28, 34, 52), rgb(99, 102, 241), rgb(226, 232, 240))
+    } else {
+        (rgb(20, 24, 34), rgb(32, 38, 54), rgb(148, 163, 184))
+    };
+    draw_rounded_card(hdc, card_x, hint_y, card_w, hint_h, 8, hk_bg, hk_border);
+
+    let hk_str = format_hotkey(config.hotkey_modifiers, config.hotkey_vk);
+    let hk_label = if config.hotkey_enable {
+        format!("⌨  Global Hotkey: [ {} ]  •  Click to customize", hk_str)
+    } else {
+        "⌨  Global Hotkey: Disabled  •  Click to configure".to_string()
+    };
+    draw_string(hdc, &hk_label, FONT_SMALL, hk_tc, card_x, hint_y, card_w, hint_h, DT_CENTER | DT_VCENTER);
 }
 
 unsafe fn render_tab_settings(hdc: HDC, w: i32, _h: i32, config: &Config) {
     let card_x = 16;
     let card_w = w - 32;
 
-    // 1. System & App Settings Card
+    // 1. Hero Card: Global Cleanup Hotkey
     let y1 = 54;
-    let h1 = 216;
+    let h1 = 94;
     draw_rounded_card(hdc, card_x, y1, card_w, h1, 12, rgb(24, 27, 36), rgb(38, 43, 58));
-    draw_string(hdc, "SYSTEM & APPLICATION SETTINGS", FONT_SMALL, rgb(148, 163, 184), card_x + 14, y1 + 8, 240, 16, DT_LEFT);
+    draw_string(hdc, "GLOBAL CLEANUP SHORTCUT", FONT_SMALL, rgb(148, 163, 184), card_x + 14, y1 + 8, 200, 16, DT_LEFT);
 
-    let rows: [(&str, bool, ClickTarget); 6] = [
+    let hk_tog_x = card_x + card_w - 68;
+    let is_hk_hover = HOVER_TARGET == Some(ClickTarget::SettingHotkey);
+    let hk_tog_bg = if config.hotkey_enable {
+        if is_hk_hover { rgb(129, 140, 248) } else { rgb(99, 102, 241) }
+    } else {
+        if is_hk_hover { rgb(55, 62, 82) } else { rgb(40, 45, 60) }
+    };
+    let hk_tog_txt = if config.hotkey_enable { "ON" } else { "OFF" };
+    draw_rounded_card(hdc, hk_tog_x, y1 + 8, 54, 20, 10, hk_tog_bg, hk_tog_bg);
+    draw_string(hdc, hk_tog_txt, FONT_SMALL, rgb(255, 255, 255), hk_tog_x, y1 + 8, 54, 20, DT_CENTER | DT_VCENTER);
+
+    if IS_RECORDING_HOTKEY {
+        let rec_w = card_w - 28;
+        let rec_y = y1 + 38;
+        let rec_h = 44;
+        draw_rounded_card(hdc, card_x + 14, rec_y, rec_w, rec_h, 10, rgb(50, 30, 15), rgb(245, 158, 11));
+        draw_string(
+            hdc,
+            "🔴  PRESS ANY KEY COMBINATION NOW...",
+            FONT_BTN,
+            rgb(251, 191, 36),
+            card_x + 14,
+            rec_y + 4,
+            rec_w,
+            20,
+            DT_CENTER | DT_VCENTER,
+        );
+        draw_string(
+            hdc,
+            "Hold Ctrl/Alt/Shift + Key  •  Press Esc to cancel",
+            FONT_SMALL,
+            rgb(253, 230, 138),
+            card_x + 14,
+            rec_y + 24,
+            rec_w,
+            16,
+            DT_CENTER | DT_VCENTER,
+        );
+    } else {
+        // Display badge
+        let hk_badge_w = 140;
+        let hk_badge_y = y1 + 42;
+        let hk_badge_h = 36;
+        draw_rounded_card(hdc, card_x + 14, hk_badge_y, hk_badge_w, hk_badge_h, 8, rgb(30, 36, 54), rgb(99, 102, 241));
+        let cur_hk = format_hotkey(config.hotkey_modifiers, config.hotkey_vk);
+        draw_string(hdc, &cur_hk, FONT_BTN, rgb(255, 255, 255), card_x + 14, hk_badge_y, hk_badge_w, hk_badge_h, DT_CENTER | DT_VCENTER);
+
+        // Change button
+        let chg_x = card_x + 162;
+        let chg_w = card_w - 250;
+        let is_chg_hover = HOVER_TARGET == Some(ClickTarget::SettingHotkeyRecord);
+        let chg_bg = if is_chg_hover { rgb(55, 65, 95) } else { rgb(40, 48, 70) };
+        let chg_border = if is_chg_hover { rgb(129, 140, 248) } else { rgb(60, 70, 100) };
+        draw_rounded_card(hdc, chg_x, hk_badge_y, chg_w, hk_badge_h, 8, chg_bg, chg_border);
+        draw_string(hdc, "⌨  Record Key", FONT_SUBTITLE, rgb(226, 232, 240), chg_x, hk_badge_y, chg_w, hk_badge_h, DT_CENTER | DT_VCENTER);
+
+        // Reset button
+        let rst_hk_x = card_x + card_w - 78;
+        let rst_hk_w = 64;
+        let is_rst_hk_hover = HOVER_TARGET == Some(ClickTarget::SettingHotkeyReset);
+        let rst_hk_bg = if is_rst_hk_hover { rgb(50, 24, 30) } else { rgb(35, 22, 26) };
+        let rst_hk_border = if is_rst_hk_hover { rgb(140, 40, 50) } else { rgb(70, 30, 36) };
+        draw_rounded_card(hdc, rst_hk_x, hk_badge_y, rst_hk_w, hk_badge_h, 8, rst_hk_bg, rst_hk_border);
+        draw_string(hdc, "↺ Reset", FONT_SMALL, rgb(248, 113, 113), rst_hk_x, hk_badge_y, rst_hk_w, hk_badge_h, DT_CENTER | DT_VCENTER);
+    }
+
+    // 2. System & App Settings Card
+    let y2 = 156;
+    let h2 = 168;
+    draw_rounded_card(hdc, card_x, y2, card_w, h2, 12, rgb(24, 27, 36), rgb(38, 43, 58));
+    draw_string(hdc, "APPLICATION PREFERENCES", FONT_SMALL, rgb(148, 163, 184), card_x + 14, y2 + 8, 240, 16, DT_LEFT);
+
+    let rows: [(&str, bool, ClickTarget); 5] = [
         ("Window always on top", config.always_on_top, ClickTarget::SettingAlwaysOnTop),
         ("Load on Windows startup", config.load_on_startup, ClickTarget::SettingAutostart),
         ("Start minimized to tray", config.start_minimized, ClickTarget::SettingStartMinimized),
         ("Show balloon notifications", config.balloon_notifications, ClickTarget::SettingBalloonNotifications),
         ("Notification sound effect", config.notification_sound, ClickTarget::SettingNotificationSound),
-        ("Global hotkey (Ctrl + F1)", config.hotkey_enable, ClickTarget::SettingHotkey),
     ];
 
     for (i, (label, val, target)) in rows.iter().enumerate() {
-        let ry = y1 + 26 + i as i32 * 31;
-        draw_string(hdc, label, FONT_BODY, rgb(226, 232, 240), card_x + 14, ry, 230, 22, DT_LEFT | DT_VCENTER);
+        let ry = y2 + 28 + i as i32 * 27;
+        draw_string(hdc, label, FONT_BODY, rgb(226, 232, 240), card_x + 14, ry, 230, 20, DT_LEFT | DT_VCENTER);
 
         let sw_x = card_x + card_w - 68;
         let is_hover = HOVER_TARGET == Some(*target);
@@ -799,76 +920,112 @@ unsafe fn render_tab_settings(hdc: HDC, w: i32, _h: i32, config: &Config) {
         draw_string(hdc, sw_txt, FONT_SMALL, rgb(255, 255, 255), sw_x, ry, 54, 20, DT_CENTER | DT_VCENTER);
     }
 
-    // 2. Setting: Auto-Clean Threshold
-    let y2 = 280;
-    draw_rounded_card(hdc, card_x, y2, card_w, 84, 12, rgb(24, 27, 36), rgb(38, 43, 58));
-    draw_string(hdc, "AUTO-REDUCT ON THRESHOLD", FONT_SMALL, rgb(148, 163, 184), card_x + 14, y2 + 8, 200, 16, DT_LEFT);
+    // 3. Setting: Auto-Clean Threshold
+    let y3 = 332;
+    let h3 = 80;
+    draw_rounded_card(hdc, card_x, y3, card_w, h3, 12, rgb(24, 27, 36), rgb(38, 43, 58));
+    draw_string(hdc, "AUTO-REDUCT ON THRESHOLD", FONT_SMALL, rgb(148, 163, 184), card_x + 14, y3 + 8, 200, 16, DT_LEFT);
 
+    let is_at_hover = HOVER_TARGET == Some(ClickTarget::SettingAutoToggle);
     let tog_text = if config.autoreduct_enable { "ACTIVE" } else { "DISABLED" };
-    let tog_bg = if config.autoreduct_enable { rgb(16, 185, 129) } else { rgb(45, 50, 68) };
-    draw_rounded_card(hdc, card_x + card_w - 86, y2 + 8, 72, 20, 10, tog_bg, tog_bg);
-    draw_string(hdc, tog_text, FONT_SMALL, rgb(255, 255, 255), card_x + card_w - 86, y2 + 8, 72, 20, DT_CENTER | DT_VCENTER);
+    let tog_bg = if config.autoreduct_enable {
+        if is_at_hover { rgb(52, 211, 153) } else { rgb(16, 185, 129) }
+    } else {
+        if is_at_hover { rgb(60, 68, 88) } else { rgb(45, 50, 68) }
+    };
+    draw_rounded_card(hdc, card_x + card_w - 86, y3 + 8, 72, 20, 10, tog_bg, tog_bg);
+    draw_string(hdc, tog_text, FONT_SMALL, rgb(255, 255, 255), card_x + card_w - 86, y3 + 8, 72, 20, DT_CENTER | DT_VCENTER);
 
     let limits = [70u8, 75, 80, 85, 90, 95];
     let pill_w = 42;
     let pill_h = 24;
     for (i, &lim) in limits.iter().enumerate() {
         let px = card_x + 14 + i as i32 * (pill_w + 7);
-        let py = y2 + 42;
+        let py = y3 + 42;
         let is_sel = config.autoreduct_limit == lim;
-        let bg = if is_sel { rgb(99, 102, 241) } else { rgb(32, 36, 48) };
+        let is_hover = HOVER_TARGET == Some(ClickTarget::SettingLimit(lim));
+        let bg = if is_sel {
+            rgb(99, 102, 241)
+        } else if is_hover {
+            rgb(45, 52, 72)
+        } else {
+            rgb(32, 36, 48)
+        };
         let tc = if is_sel { rgb(255, 255, 255) } else { rgb(160, 170, 190) };
         draw_rounded_card(hdc, px, py, pill_w, pill_h, 8, bg, bg);
         draw_string(hdc, &format!("{}%", lim), FONT_SMALL, tc, px, py, pill_w, pill_h, DT_CENTER | DT_VCENTER);
     }
 
-    // 3. Setting: Periodic Interval
-    let y3 = 374;
-    draw_rounded_card(hdc, card_x, y3, card_w, 84, 12, rgb(24, 27, 36), rgb(38, 43, 58));
-    draw_string(hdc, "PERIODIC CLEANUP INTERVAL", FONT_SMALL, rgb(148, 163, 184), card_x + 14, y3 + 8, 200, 16, DT_LEFT);
+    // 4. Setting: Periodic Interval
+    let y4 = 420;
+    let h4 = 80;
+    draw_rounded_card(hdc, card_x, y4, card_w, h4, 12, rgb(24, 27, 36), rgb(38, 43, 58));
+    draw_string(hdc, "PERIODIC CLEANUP INTERVAL", FONT_SMALL, rgb(148, 163, 184), card_x + 14, y4 + 8, 200, 16, DT_LEFT);
 
+    let is_it_hover = HOVER_TARGET == Some(ClickTarget::SettingIntervalToggle);
     let int_text = if config.autoreduct_interval_enable { "ACTIVE" } else { "DISABLED" };
-    let int_bg = if config.autoreduct_interval_enable { rgb(16, 185, 129) } else { rgb(45, 50, 68) };
-    draw_rounded_card(hdc, card_x + card_w - 86, y3 + 8, 72, 20, 10, int_bg, int_bg);
-    draw_string(hdc, int_text, FONT_SMALL, rgb(255, 255, 255), card_x + card_w - 86, y3 + 8, 72, 20, DT_CENTER | DT_VCENTER);
+    let int_bg = if config.autoreduct_interval_enable {
+        if is_it_hover { rgb(52, 211, 153) } else { rgb(16, 185, 129) }
+    } else {
+        if is_it_hover { rgb(60, 68, 88) } else { rgb(45, 50, 68) }
+    };
+    draw_rounded_card(hdc, card_x + card_w - 86, y4 + 8, 72, 20, 10, int_bg, int_bg);
+    draw_string(hdc, int_text, FONT_SMALL, rgb(255, 255, 255), card_x + card_w - 86, y4 + 8, 72, 20, DT_CENTER | DT_VCENTER);
 
     let intervals = [15u64, 30, 45, 60, 120];
     let ipill_w = 52;
     for (i, &iv) in intervals.iter().enumerate() {
         let px = card_x + 14 + i as i32 * (ipill_w + 8);
-        let py = y3 + 42;
+        let py = y4 + 42;
         let is_sel = config.autoreduct_interval_minutes == iv;
-        let bg = if is_sel { rgb(99, 102, 241) } else { rgb(32, 36, 48) };
+        let is_hover = HOVER_TARGET == Some(ClickTarget::SettingInterval(iv));
+        let bg = if is_sel {
+            rgb(99, 102, 241)
+        } else if is_hover {
+            rgb(45, 52, 72)
+        } else {
+            rgb(32, 36, 48)
+        };
         let tc = if is_sel { rgb(255, 255, 255) } else { rgb(160, 170, 190) };
         draw_rounded_card(hdc, px, py, ipill_w, pill_h, 8, bg, bg);
         draw_string(hdc, &format!("{}m", iv), FONT_SMALL, tc, px, py, ipill_w, pill_h, DT_CENTER | DT_VCENTER);
     }
 
-    // 4. Reset Button
-    let y4 = 470;
-    let rst_bg = if HOVER_TARGET == Some(ClickTarget::SettingReset) { rgb(60, 30, 36) } else { rgb(36, 22, 26) };
-    draw_rounded_card(hdc, card_x, y4, card_w, 36, 10, rst_bg, rgb(80, 36, 42));
-    draw_string(hdc, "↺  Reset Settings to Default", FONT_SUBTITLE, rgb(248, 113, 113), card_x, y4, card_w, 36, DT_CENTER | DT_VCENTER);
+    // 5. Bottom Action Buttons
+    let y5 = 510;
+    let btn_h = 38;
 
-    // 5. Save Button
-    let y5 = 514;
-    let save_bg = if HOVER_TARGET == Some(ClickTarget::SettingSave) { rgb(52, 211, 153) } else { rgb(16, 185, 129) };
-    draw_rounded_card(hdc, card_x, y5, card_w, 42, 12, save_bg, save_bg);
-    draw_string(hdc, "💾  SAVE & RETURN TO MONITOR", FONT_BTN, rgb(255, 255, 255), card_x, y5, card_w, 42, DT_CENTER | DT_VCENTER);
+    // Reset Defaults Button
+    let rst_w = 140;
+    let is_rst_hover = HOVER_TARGET == Some(ClickTarget::SettingReset);
+    let rst_bg = if is_rst_hover { rgb(55, 25, 32) } else { rgb(36, 22, 26) };
+    let rst_border = if is_rst_hover { rgb(140, 45, 55) } else { rgb(80, 36, 42) };
+    draw_rounded_card(hdc, card_x, y5, rst_w, btn_h, 10, rst_bg, rst_border);
+    draw_string(hdc, "↺  Reset All", FONT_SUBTITLE, rgb(248, 113, 113), card_x, y5, rst_w, btn_h, DT_CENTER | DT_VCENTER);
+
+    // Save & Return Button
+    let save_x = card_x + rst_w + 10;
+    let save_w = card_w - rst_w - 10;
+    let is_save_hover = HOVER_TARGET == Some(ClickTarget::SettingSave);
+    let save_bg = if is_save_hover { rgb(52, 211, 153) } else { rgb(16, 185, 129) };
+    draw_rounded_card(hdc, save_x, y5, save_w, btn_h, 10, save_bg, save_bg);
+    draw_string(hdc, "💾  SAVE & RETURN", FONT_BTN, rgb(255, 255, 255), save_x, y5, save_w, btn_h, DT_CENTER | DT_VCENTER);
 }
 
 fn hit_test(x: i32, y: i32, w: i32) -> Option<ClickTarget> {
-    if y >= 10 && y <= 38 {
-        if x >= w - 34 && x <= w - 8 {
+    if y >= 8 && y <= 38 {
+        if x >= w - 38 && x <= w - 8 {
             return Some(ClickTarget::BtnClose);
         }
-        if x >= w - 64 && x <= w - 38 {
+        if x >= w - 68 && x <= w - 38 {
             return Some(ClickTarget::BtnMinimize);
         }
-        if x >= 170 && x <= 232 {
+        let seg_w = 176;
+        let seg_x = (w - seg_w) / 2;
+        if x >= seg_x && x <= seg_x + 86 {
             return Some(ClickTarget::TabOverview);
         }
-        if x >= 238 && x <= 302 {
+        if x >= seg_x + 88 && x <= seg_x + seg_w {
             return Some(ClickTarget::TabSettings);
         }
     }
@@ -879,8 +1036,14 @@ fn hit_test(x: i32, y: i32, w: i32) -> Option<ClickTarget> {
                 let card_x = 16;
                 let card_w = w - 32;
 
-                if x >= card_x && x <= card_x + card_w && y >= 398 && y <= 442 {
+                // Main Clean Button
+                if x >= card_x && x <= card_x + card_w && y >= 402 && y <= 448 {
                     return Some(ClickTarget::CleanButton);
+                }
+
+                // Quick Hotkey Banner
+                if x >= card_x && x <= card_x + card_w && y >= 496 && y <= 524 {
+                    return Some(ClickTarget::HotkeyBanner);
                 }
 
                 let regions = [
@@ -895,11 +1058,11 @@ fn hit_test(x: i32, y: i32, w: i32) -> Option<ClickTarget> {
                 ];
 
                 let chip_w = (card_w - 8) / 2;
-                let chip_h = 24;
+                let chip_h = 26;
 
                 for (bit, col, row) in regions {
                     let cx = card_x + col * (chip_w + 8);
-                    let cy = 282 + row * (chip_h + 6);
+                    let cy = 284 + row * (chip_h + 4);
                     if x >= cx && x <= cx + chip_w && y >= cy && y <= cy + chip_h {
                         return Some(ClickTarget::Chip(bit));
                     }
@@ -909,19 +1072,43 @@ fn hit_test(x: i32, y: i32, w: i32) -> Option<ClickTarget> {
                 let card_x = 16;
                 let card_w = w - 32;
 
-                // Section 1: System toggles
-                let sw_x = card_x + card_w - 68;
-                if x >= sw_x && x <= sw_x + 56 {
-                    if y >= 76 && y <= 104 { return Some(ClickTarget::SettingAlwaysOnTop); }
-                    if y >= 107 && y <= 135 { return Some(ClickTarget::SettingAutostart); }
-                    if y >= 138 && y <= 166 { return Some(ClickTarget::SettingStartMinimized); }
-                    if y >= 169 && y <= 197 { return Some(ClickTarget::SettingBalloonNotifications); }
-                    if y >= 200 && y <= 228 { return Some(ClickTarget::SettingNotificationSound); }
-                    if y >= 231 && y <= 259 { return Some(ClickTarget::SettingHotkey); }
+                // Section 1: Hotkey Card
+                let y1 = 54;
+                // Hotkey Toggle (ON/OFF)
+                if x >= card_x + card_w - 68 && x <= card_x + card_w - 14 && y >= y1 + 8 && y <= y1 + 28 {
+                    return Some(ClickTarget::SettingHotkey);
+                }
+                // Hotkey Change button
+                if x >= card_x + 162 && x <= card_x + card_w - 82 && y >= y1 + 42 && y <= y1 + 78 {
+                    return Some(ClickTarget::SettingHotkeyRecord);
+                }
+                // Hotkey Reset button
+                if x >= card_x + card_w - 78 && x <= card_x + card_w - 14 && y >= y1 + 42 && y <= y1 + 78 {
+                    return Some(ClickTarget::SettingHotkeyReset);
                 }
 
-                // Section 2: Auto-reduct threshold
-                if x >= card_x + card_w - 86 && x <= card_x + card_w - 14 && y >= 286 && y <= 308 {
+                // Section 2: Preferences
+                let y2 = 156;
+                let sw_x = card_x + card_w - 68;
+                if x >= sw_x && x <= sw_x + 56 {
+                    for i in 0..5 {
+                        let ry = y2 + 28 + i * 27;
+                        if y >= ry && y <= ry + 22 {
+                            return match i {
+                                0 => Some(ClickTarget::SettingAlwaysOnTop),
+                                1 => Some(ClickTarget::SettingAutostart),
+                                2 => Some(ClickTarget::SettingStartMinimized),
+                                3 => Some(ClickTarget::SettingBalloonNotifications),
+                                4 => Some(ClickTarget::SettingNotificationSound),
+                                _ => None,
+                            };
+                        }
+                    }
+                }
+
+                // Section 3: Threshold
+                let y3 = 332;
+                if x >= card_x + card_w - 86 && x <= card_x + card_w - 14 && y >= y3 + 8 && y <= y3 + 28 {
                     return Some(ClickTarget::SettingAutoToggle);
                 }
 
@@ -930,14 +1117,15 @@ fn hit_test(x: i32, y: i32, w: i32) -> Option<ClickTarget> {
                 let pill_h = 24;
                 for (i, &lim) in limits.iter().enumerate() {
                     let px = card_x + 14 + i as i32 * (pill_w + 7);
-                    let py = 322;
+                    let py = y3 + 42;
                     if x >= px && x <= px + pill_w && y >= py && y <= py + pill_h {
                         return Some(ClickTarget::SettingLimit(lim));
                     }
                 }
 
-                // Section 3: Interval
-                if x >= card_x + card_w - 86 && x <= card_x + card_w - 14 && y >= 380 && y <= 402 {
+                // Section 4: Interval
+                let y4 = 420;
+                if x >= card_x + card_w - 86 && x <= card_x + card_w - 14 && y >= y4 + 8 && y <= y4 + 28 {
                     return Some(ClickTarget::SettingIntervalToggle);
                 }
 
@@ -945,18 +1133,22 @@ fn hit_test(x: i32, y: i32, w: i32) -> Option<ClickTarget> {
                 let ipill_w = 52;
                 for (i, &iv) in intervals.iter().enumerate() {
                     let px = card_x + 14 + i as i32 * (ipill_w + 8);
-                    let py = 416;
+                    let py = y4 + 42;
                     if x >= px && x <= px + ipill_w && y >= py && y <= py + pill_h {
                         return Some(ClickTarget::SettingInterval(iv));
                     }
                 }
 
-                // Section 4: Buttons
-                if x >= card_x && x <= card_x + card_w && y >= 470 && y <= 506 {
+                // Section 5: Bottom Buttons
+                let y5 = 510;
+                let btn_h = 38;
+                let rst_w = 140;
+                // Reset defaults
+                if x >= card_x && x <= card_x + rst_w && y >= y5 && y <= y5 + btn_h {
                     return Some(ClickTarget::SettingReset);
                 }
-
-                if x >= card_x && x <= card_x + card_w && y >= 514 && y <= 556 {
+                // Save & Return
+                if x >= card_x + rst_w + 10 && x <= card_x + card_w && y >= y5 && y <= y5 + btn_h {
                     return Some(ClickTarget::SettingSave);
                 }
             }
@@ -1084,11 +1276,72 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
             }
 
             if config.hotkey_enable {
-                RegisterHotKey(hwnd, ID_HOTKEY_CLEAN, MOD_CONTROL | MOD_NOREPEAT, VK_F1);
+                RegisterHotKey(
+                    hwnd,
+                    ID_HOTKEY_CLEAN,
+                    config.hotkey_modifiers | MOD_NOREPEAT,
+                    config.hotkey_vk,
+                );
             }
 
             SetTimer(hwnd, 1, 1000, None);
             0
+        }
+        WM_KEYDOWN | WM_SYSKEYDOWN => {
+            if IS_RECORDING_HOTKEY {
+                let vk = wparam as u32;
+                // Esc cancels recording
+                if vk == 0x1B {
+                    IS_RECORDING_HOTKEY = false;
+                    InvalidateRect(hwnd, ptr::null(), 0);
+                    return 0;
+                }
+
+                // Ignore standalone modifier keypresses alone
+                let is_modifier_key = matches!(
+                    vk,
+                    0x10 | 0x11 | 0x12 | 0x5B | 0x5C | 0xA0 | 0xA1 | 0xA2 | 0xA3 | 0xA4 | 0xA5
+                );
+                if is_modifier_key {
+                    return 0;
+                }
+
+                let mut mods = 0u32;
+                if (GetKeyState(0x11) as u16 & 0x8000) != 0 {
+                    mods |= MOD_CONTROL;
+                }
+                if (GetKeyState(0x12) as u16 & 0x8000) != 0 {
+                    mods |= MOD_ALT;
+                }
+                if (GetKeyState(0x10) as u16 & 0x8000) != 0 {
+                    mods |= MOD_SHIFT;
+                }
+                if ((GetKeyState(0x5B) as u16 & 0x8000) != 0)
+                    || ((GetKeyState(0x5C) as u16 & 0x8000) != 0)
+                {
+                    mods |= MOD_WIN;
+                }
+
+                let mut config = Config::load();
+                config.hotkey_modifiers = mods;
+                config.hotkey_vk = vk;
+                let _ = config.save();
+                IS_RECORDING_HOTKEY = false;
+
+                UnregisterHotKey(hwnd, ID_HOTKEY_CLEAN);
+                if config.hotkey_enable {
+                    RegisterHotKey(
+                        hwnd,
+                        ID_HOTKEY_CLEAN,
+                        config.hotkey_modifiers | MOD_NOREPEAT,
+                        config.hotkey_vk,
+                    );
+                }
+
+                InvalidateRect(hwnd, ptr::null(), 0);
+                return 0;
+            }
+            DefWindowProcW(hwnd, msg, wparam, lparam)
         }
         WM_HOTKEY => {
             if (wparam as i32) == ID_HOTKEY_CLEAN {
@@ -1165,6 +1418,10 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
 
             let mut config = Config::load();
             if let Some(target) = hit_test(x, y, w) {
+                if target != ClickTarget::SettingHotkeyRecord && IS_RECORDING_HOTKEY {
+                    IS_RECORDING_HOTKEY = false;
+                }
+
                 match target {
                     ClickTarget::BtnMinimize => {
                         let config = Config::load();
@@ -1187,6 +1444,10 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
                     }
                     ClickTarget::CleanButton => {
                         do_clean(hwnd);
+                    }
+                    ClickTarget::HotkeyBanner => {
+                        ACTIVE_TAB = ActiveTab::Settings;
+                        InvalidateRect(hwnd, ptr::null(), 0);
                     }
                     ClickTarget::Chip(bit) => {
                         CURRENT_MASK ^= bit;
@@ -1224,11 +1485,36 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
                     ClickTarget::SettingHotkey => {
                         config.hotkey_enable = !config.hotkey_enable;
                         if config.hotkey_enable {
-                            RegisterHotKey(hwnd, ID_HOTKEY_CLEAN, MOD_CONTROL | MOD_NOREPEAT, VK_F1);
+                            RegisterHotKey(
+                                hwnd,
+                                ID_HOTKEY_CLEAN,
+                                config.hotkey_modifiers | MOD_NOREPEAT,
+                                config.hotkey_vk,
+                            );
                         } else {
                             UnregisterHotKey(hwnd, ID_HOTKEY_CLEAN);
                         }
                         let _ = config.save();
+                        InvalidateRect(hwnd, ptr::null(), 0);
+                    }
+                    ClickTarget::SettingHotkeyRecord => {
+                        IS_RECORDING_HOTKEY = true;
+                        InvalidateRect(hwnd, ptr::null(), 0);
+                    }
+                    ClickTarget::SettingHotkeyReset => {
+                        config.hotkey_modifiers = 0x0002; // MOD_CONTROL
+                        config.hotkey_vk = 0x70;          // VK_F1
+                        let _ = config.save();
+                        UnregisterHotKey(hwnd, ID_HOTKEY_CLEAN);
+                        if config.hotkey_enable {
+                            RegisterHotKey(
+                                hwnd,
+                                ID_HOTKEY_CLEAN,
+                                config.hotkey_modifiers | MOD_NOREPEAT,
+                                config.hotkey_vk,
+                            );
+                        }
+                        IS_RECORDING_HOTKEY = false;
                         InvalidateRect(hwnd, ptr::null(), 0);
                     }
                     ClickTarget::SettingAutoToggle => {
@@ -1255,6 +1541,16 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
                         let def = Config::default();
                         CURRENT_MASK = def.reduct_mask;
                         let _ = def.save();
+                        UnregisterHotKey(hwnd, ID_HOTKEY_CLEAN);
+                        if def.hotkey_enable {
+                            RegisterHotKey(
+                                hwnd,
+                                ID_HOTKEY_CLEAN,
+                                def.hotkey_modifiers | MOD_NOREPEAT,
+                                def.hotkey_vk,
+                            );
+                        }
+                        IS_RECORDING_HOTKEY = false;
                         InvalidateRect(hwnd, ptr::null(), 0);
                     }
                     ClickTarget::SettingSave => {
@@ -1264,10 +1560,16 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
                         InvalidateRect(hwnd, ptr::null(), 0);
                     }
                 }
-            } else if y <= 48 {
-                // Header bar dragging
-                ReleaseCapture();
-                SendMessageW(hwnd, WM_NCLBUTTONDOWN, HTCAPTION as WPARAM, 0);
+            } else {
+                if IS_RECORDING_HOTKEY {
+                    IS_RECORDING_HOTKEY = false;
+                    InvalidateRect(hwnd, ptr::null(), 0);
+                }
+                if y <= 48 {
+                    // Header bar dragging
+                    ReleaseCapture();
+                    SendMessageW(hwnd, WM_NCLBUTTONDOWN, HTCAPTION as WPARAM, 0);
+                }
             }
             0
         }
@@ -1609,8 +1911,8 @@ pub fn run_gui() -> Result<(), String> {
             WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX | WS_VISIBLE,
             CW_USEDEFAULT,
             CW_USEDEFAULT,
-            420,
-            630,
+            440,
+            640,
             ptr::null_mut(),
             ptr::null_mut(),
             hinst,
